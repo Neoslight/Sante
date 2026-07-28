@@ -269,6 +269,67 @@ def test_progress_verdict_never_calls_an_inconclusive_slope_a_plateau():
     assert "plateau" in v.hint.lower(), "l'aide doit dire explicitement que ce n'en est pas un"
 
 
+def test_merge_nuances_folds_identical_lines_into_one():
+    """Trois lignes disant la même chose portent un seul bit d'information et
+    occupent la place de trois signaux. Une fois le motif régulier, c'est sa
+    RUPTURE qui devient le signal."""
+    nuances = [
+        ("VO2max", "aucune tendance nette", "neutral", 0.01),
+        ("FC de repos", "aucune tendance nette", "neutral", 0.02),
+        ("Variabilité cardiaque", "aucune tendance nette", "neutral", 0.03),
+    ]
+    merged = stats.merge_nuances(nuances, span_days=37)
+    assert len(merged) == 1
+    assert merged[0][0] == "VO2max, FC de repos et variabilité cardiaque"
+    assert merged[0][1] == "aucune tendance nette sur 37 jours"
+    # Sigle préservé au milieu de l'énumération.
+    assert "fC de repos" not in merged[0][0]
+
+
+def test_merge_nuances_keeps_anything_that_differs():
+    """Deux pentes de valeurs différentes ont chacune quelque chose à dire :
+    les fondre perdrait de l'information au lieu d'en gagner."""
+    nuances = [
+        ("VO2max", "hausse de +0.20 par semaine", "good", 0.2),
+        ("FC de repos", "aucune tendance nette", "neutral", 0.0),
+    ]
+    assert len(stats.merge_nuances(nuances)) == 2
+
+
+def test_progress_verdict_ranks_the_primary_metric_first_at_equal_status():
+    """La VO2max arbitre le verdict ; la lister en dernier faisait dire à l'ordre
+    le contraire de la règle de composition."""
+    trends = {
+        "FC de repos": (_trend(0.001, n=60, noise=3.0), -1),
+        "Variabilité cardiaque": (_trend(0.001, n=60, noise=3.0, seed=2), 1),
+        "VO2max": (_trend(0.001, n=60, noise=3.0, seed=3), 1),
+    }
+    v = stats.progress_verdict(trends, primary="VO2max")
+    assert v.nuances[0][0] == "VO2max"
+
+
+def test_progress_verdict_advice_follows_what_the_screen_actually_offers():
+    """Le hint finissait par « Élargis l'horizon » alors que la page venait de
+    retirer le sélecteur, faute d'historique : elle ôtait le contrôle et
+    conseillait dans la même seconde de s'en servir."""
+    trends = {"VO2max": (_trend(0.0, n=60, noise=3.0), 1)}
+    widenable = stats.progress_verdict(trends, can_widen=True)
+    stuck = stats.progress_verdict(trends, can_widen=False)
+    assert widenable.headline == stuck.headline == "Rien de mesurable"
+    assert "Élargis l'horizon" in widenable.hint
+    assert "Élargis l'horizon" not in stuck.hint
+    assert "quelques semaines" in stuck.hint
+
+
+def test_progress_verdict_gives_no_advice_when_a_slope_concludes():
+    """Une pente qui conclut n'appelle aucune action : le lecteur n'a qu'à la
+    lire. Un conseil systématique serait du remplissage."""
+    v = stats.progress_verdict({"VO2max": (_trend(0.02), 1)}, can_widen=False)
+    assert v.headline == "Tu progresses"
+    for action in stats.PROGRESS_ACTIONS.values():
+        assert action not in v.hint
+
+
 def test_progress_verdict_never_says_plateau_at_all():
     """Aucun chemin ne mène à cette affirmation : elle demanderait un test
     d'équivalence, donc une borne de non-pertinence par métrique."""

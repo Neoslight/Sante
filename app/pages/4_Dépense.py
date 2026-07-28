@@ -37,11 +37,16 @@ d = queries.daily(start, end)
 bmr = queries.bmr_kcal()
 
 with ui.card("Dépense calorique vs métabolisme de base"):
-    fig = charts.metric_chart(d, metric("calories_total"), show_trend=True)
     t = theme.active_tokens()
-    fig.add_hline(y=bmr, line_dash="dot", line_color=t["ink_muted"],
-                  annotation_text=f"BMR ≈ {bmr:.0f} kcal (Mifflin-St Jeor)", annotation_font_color=t["ink_muted"])
-    st.plotly_chart(fig, width="stretch")
+
+    def _add_bmr(fig):
+        """Repère de métabolisme de base, posé sur la figure via le point
+        d'accroche de `metric_block` : la page n'a pas à toucher au rendu."""
+        fig.add_hline(y=bmr, line_dash="dot", line_color=t["ink_muted"],
+                      annotation_text=f"BMR ≈ {bmr:.0f} kcal (Mifflin-St Jeor)",
+                      annotation_font_color=t["ink_muted"])
+
+    charts.metric_block(d, metric("calories_total"), show_trend=True, decorate=_add_bmr)
     st.caption(
         "BMR calculé à partir de ton profil réel (poids, taille, âge, sexe) — cf. queries.bmr_kcal. "
         "L'écart entre la courbe et la ligne pointillée est ce que l'activité a ajouté au repos strict."
@@ -74,12 +79,10 @@ with ui.card(
 col_a, col_b = st.columns(2)
 with col_a:
     with ui.card("Sédentarité"):
-        fig = charts.metric_chart(d, metric("sedentary_min"))
-        st.plotly_chart(fig, width="stretch")
+        charts.metric_block(d, metric("sedentary_min"))
 with col_b:
     with ui.card("Plus longue période assise"):
-        fig = charts.metric_chart(d, metric("longest_sedentary_period_min"))
-        st.plotly_chart(fig, width="stretch")
+        charts.metric_block(d, metric("longest_sedentary_period_min"))
 
 with ui.card("Pas vs objectif réel"):
     steps_metric = metric("steps")
@@ -90,8 +93,7 @@ with ui.card("Pas vs objectif réel"):
         # objectif Fitbit : on le substitue plutôt que d'afficher un chiffre
         # d'exemple à la place d'une donnée réelle.
         steps_metric = dataclasses.replace(steps_metric, target=real_goal)
-    fig = charts.metric_chart(d, steps_metric, show_trend=True)
-    st.plotly_chart(fig, width="stretch")
+    charts.metric_block(d, steps_metric, show_trend=True)
     if real_goal is not None:
         st.caption(f"Objectif quotidien Fitbit actuel : {real_goal:,.0f} pas.".replace(",", " "))
     else:

@@ -19,6 +19,7 @@ une boîte noire d'un calcul auditable.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Familles, dans l'ordre de lecture du dashboard.
@@ -83,6 +84,24 @@ class Metric:
         if self.fmt in (FMT_DURATION, FMT_DURATION_SIGNED):
             return format_duration(value, signed=self.fmt == FMT_DURATION_SIGNED)
         return _fr_number(self.fmt.format(value)) + (self.unit if with_unit else "")
+
+    def rounded(self, value: float | None) -> float | None:
+        """La valeur telle qu'elle sera LUE, à la précision de son format.
+
+        Sert à calculer un écart entre deux valeurs affichées côte à côte. Sur
+        des valeurs brutes, « 35,04 → 28,55 » se rend « 35,0 → 28,5 » mais son
+        écart se rend « −6,4 » : l'arithmétique visible à l'écran ne tombe pas
+        juste, et le lecteur qui la refait de tête trouve autre chose que ce
+        qu'on lui montre. Arrondir AVANT de soustraire rend l'affichage
+        cohérent avec lui-même.
+
+        Formats non numériques (durées) : renvoie la valeur telle quelle — ce
+        sont des minutes entières, la question ne se pose pas.
+        """
+        if value is None or value != value:
+            return value
+        m = re.search(r"\.(\d+)f", self.fmt)
+        return round(float(value), int(m.group(1)) if m else 0)
 
     def format_delta(self, diff: float) -> str:
         """Variation formatée, toujours signée.

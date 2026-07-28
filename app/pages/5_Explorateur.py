@@ -82,8 +82,7 @@ with ui.card("Métriques libres"):
     for i, key in enumerate(selected):
         m = metrics.get(key)
         with cols[i % 2]:
-            fig = charts.metric_chart(plot_df, m, show_trend=True)
-            st.plotly_chart(fig, width="stretch")
+            charts.metric_block(plot_df, m, show_trend=True)
 
 # =============================================================================
 # Corrélations honnêtes

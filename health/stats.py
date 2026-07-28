@@ -434,17 +434,68 @@ PROGRESS_HINTS: dict[str, str] = {
              "aucune direction d'ensemble ne s'en dégage.",
     "noise": "Les pentes sont mesurées, aucune ne se distingue du bruit. Ce "
              "n'est pas un plateau : sur cette fenêtre, la mesure ne permet ni "
-             "d'affirmer un progrès ni d'affirmer une stagnation. Élargis "
-             "l'horizon.",
+             "d'affirmer un progrès ni d'affirmer une stagnation.",
     "unknown": "Pas assez de points mesurés sur cette fenêtre pour qu'une "
-               "régression dise quoi que ce soit. Élargis l'horizon.",
+               "régression dise quoi que ce soit.",
 }
+
+#: Conduite à tenir quand rien ne conclut, selon qu'il RESTE quelque chose à
+#: élargir. « Élargis l'horizon » collé en dur à la fin du hint contredisait
+#: l'écran dès que le sélecteur d'horizon disparaissait faute d'historique :
+#: la page retirait le contrôle et conseillait dans la même seconde de s'en
+#: servir. Le conseil dépend donc de la même condition que le sélecteur.
+PROGRESS_ACTIONS: dict[bool, str] = {
+    True: "Élargis l'horizon.",
+    False: "Reviens dans quelques semaines : c'est du temps de mesure qu'il "
+           "manque, pas un réglage.",
+}
+#: Les seuls états où un conseil a lieu d'être : quand une pente conclut, le
+#: lecteur n'a rien à faire de plus que la lire.
+PROGRESS_INCONCLUSIVE = ("noise", "unknown")
+
+
+def merge_nuances(
+    nuances: list[tuple[str, str, str, float]], span_days: int | None = None,
+) -> list[tuple[str, str, str, float]]:
+    """Fusionne en UNE ligne les nuances qui disent exactement la même chose.
+
+    Trois lignes, trois puces et trois fois « aucune tendance nette » portent un
+    seul bit d'information et occupent la place de trois signaux. C'est la règle
+    déjà tenue ailleurs dans le tableau de bord — un bandeau « rien à signaler »
+    est une alerte pour dire qu'il n'y a pas d'alerte — appliquée aux nuances.
+
+    Le gain n'est pas seulement de la hauteur : une fois le motif régulier, le
+    jour où une métrique se détache, c'est la RUPTURE du motif qui devient le
+    signal. Trois lignes identiques n'ont pas ce pouvoir.
+
+    Ne fusionne que des nuances de même phrase ET de même statut : deux pentes
+    de valeurs différentes ont chacune quelque chose à dire. Le détail par
+    métrique reste de toute façon dans le détail chiffré.
+    """
+    groups: dict[tuple[str, str], list[tuple[str, str, str, float]]] = {}
+    for n in nuances:
+        groups.setdefault((n[1], n[2]), []).append(n)
+
+    out: list[tuple[str, str, str, float]] = []
+    for (phrase, status), members in groups.items():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        # Énumération à la française : virgules, puis « et » avant le dernier.
+        # Seul le premier nom garde sa majuscule — les suivants sont au milieu
+        # d'une phrase (`_lower_first` protège les sigles : « FC de repos »).
+        names = [members[0][0]] + [_lower_first(m[0]) for m in members[1:]]
+        joined = f"{', '.join(names[:-1])} et {names[-1]}"
+        text = f"{phrase} sur {span_days} jours" if span_days else phrase
+        out.append((joined, text, status, members[0][3]))
+    return out
 
 
 def progress_verdict(
     trends: dict[str, tuple[Trend | None, int]],
     primary: str | None = None,
     units: dict[str, str] | None = None,
+    can_widen: bool = True,
 ) -> Verdict:
     """Un verdict unique de progression, à partir de plusieurs tendances.
 
@@ -474,6 +525,11 @@ def progress_verdict(
     `status_from_z` (+1 haut = mieux, -1 haut = moins bien, 0 neutre). Les
     directions nulles sont ignorées : sans sens bon/mauvais, une pente ne peut
     pas qualifier une progression.
+
+    `can_widen` : y a-t-il encore un horizon à élargir ? Faux quand l'historique
+    est trop court pour offrir plus d'une fenêtre — le conseil devient alors
+    « reviens dans quelques semaines », sans quoi la page retire le sélecteur
+    d'horizon et conseille dans la même seconde de s'en servir.
 
     `units` : {libellé: unité} pour la phrase de `Trend.label`. Le registre de
     métriques vit dans `health.metrics`, que ce module n'importe pas — c'est
@@ -509,8 +565,16 @@ def progress_verdict(
 
     # Attention d'abord, progrès ensuite, plateaux et non-concluants en dernier :
     # ce qui demande une décision se lit en haut de la carte.
+    #
+    # À statut égal, la métrique de référence passe devant. Sans ce départage,
+    # la VO2max se retrouvait listée EN DERNIER alors qu'elle arbitre le
+    # verdict : l'ordre affirmait le contraire de la règle de composition.
     _rank = {"serious": 0, "critical": 0, "good": 1, "neutral": 2}
-    nuances.sort(key=lambda n: (_rank.get(n[2], 3), -abs(n[3]) if n[3] == n[3] else 0))
+    nuances.sort(key=lambda n: (
+        _rank.get(n[2], 3),
+        0 if n[0] == primary else 1,
+        -abs(n[3]) if n[3] == n[3] else 0,
+    ))
 
     if not scores:
         # Aucune pente n'a même pu être estimée : la fenêtre est trop courte.
@@ -528,6 +592,11 @@ def progress_verdict(
 
     headline, status = PROGRESS_BADGES[state]
     hint = PROGRESS_HINTS[state]
+    # Le conseil n'est ajouté QUE si rien ne conclut, et il dit alors ce que
+    # l'écran permet réellement de faire : `can_widen` doit refléter la présence
+    # du sélecteur d'horizon chez l'appelant.
+    if state in PROGRESS_INCONCLUSIVE:
+        hint = f"{hint} {PROGRESS_ACTIONS[can_widen]}"
 
     adverse = [n for n in nuances if n[2] in ("serious", "critical")]
     if adverse and state == "up":

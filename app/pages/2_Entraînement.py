@@ -55,15 +55,14 @@ if maturity < 1.0:
 with ui.card("Charge : fond, fatigue, fraîcheur"):
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.plotly_chart(charts.metric_chart(ctl_period, metric("ctl")), width="stretch")
+        charts.metric_block(ctl_period, metric("ctl"))
     with c2:
-        st.plotly_chart(charts.metric_chart(ctl_period, metric("atl")), width="stretch")
+        charts.metric_block(ctl_period, metric("atl"))
     with c3:
-        st.plotly_chart(charts.metric_chart(ctl_period, metric("tsb")), width="stretch")
+        charts.metric_block(ctl_period, metric("tsb"))
 
 with ui.card("ACWR — charge aiguë (7j) / chronique (28j)", metric("acwr_ratio").how_read):
-    fig = charts.metric_chart(d, metric("acwr_ratio"))
-    st.plotly_chart(fig, width="stretch")
+    charts.metric_block(d, metric("acwr_ratio"))
 
 # =============================================================================
 # Volume par groupe musculaire — deux unités

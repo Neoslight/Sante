@@ -456,31 +456,59 @@ def test_fit_y_range_survives_a_perfectly_flat_series():
     assert lo < 7.0 < hi
 
 
-def test_metric_chart_notes_never_float_over_the_title_band():
-    """Plotly dimensionne ses marges pour le titre, la légende et les ticks, mais
-    JAMAIS pour les annotations : une note en coordonnées papier se posait par
-    -dessus. Elles vivent maintenant dans le bloc titre."""
+def test_metric_chart_carries_no_chrome_at_all():
+    """LE test structurel : la figure ne porte plus ni titre, ni légende, ni
+    note. Titre, sous-titre et légende Plotly visent tous la même bande au-dessus
+    du plot — Plotly ne les empile pas et ne dimensionne aucune marge pour les
+    annotations. Tant qu'ils y sont, la collision est une question de largeur de
+    colonne, pas de réglage."""
     fig = charts.metric_chart(
         _hr_frame([60.0 + i * 0.1 for i in range(40)]), metrics.require("resting_hr"),
         show_trend=True, show_confidence=True,
     )
     assert fig.layout.annotations == ()
-    note = fig.layout.title.subtitle.text
-    assert "hausse" in note
+    assert fig.layout.title.text is None
+    assert fig.layout.showlegend is False
+    assert fig.layout.margin.t == 8, "la figure récupère toute sa boîte"
+
+
+def test_chart_header_carries_the_chrome_instead():
+    """Ce que la figure a perdu, l'en-tête HTML le porte — sinon la
+    restructuration serait une suppression."""
+    fig = charts.metric_chart(
+        _hr_frame([60.0 + i * 0.1 for i in range(40)]), metrics.require("resting_hr"),
+        show_trend=True, show_confidence=True,
+    )
+    head = charts.chart_header_html(dict(fig.layout.meta))
+    assert "Fréquence cardiaque au repos" in head
+    assert "hausse" in head
     # Aucun appareil statistique en surface : ni effectif, ni p-value.
-    assert "n=" not in note and "p=" not in note
+    assert "n=" not in head and "p=" not in head
+    for label in ("Zone normale (28j)", "Quotidien", "Moyenne 7j"):
+        assert label in head
 
 
-def test_metric_chart_without_a_title_gives_the_slot_to_the_note():
-    """Dans une carte déjà nommée, le titre interne ne répète rien : la note
-    prend sa place au lieu de flotter au-dessus de la légende."""
+def test_chart_header_omits_the_title_the_card_already_carries():
     fig = charts.metric_chart(
         _hr_frame([60.0 + i * 0.1 for i in range(40)]), metrics.require("resting_hr"),
         title="", show_trend=True,
     )
-    assert fig.layout.annotations == ()
-    assert "hausse" in fig.layout.title.text
-    assert "n=" not in fig.layout.title.text
+    head = charts.chart_header_html(dict(fig.layout.meta))
+    assert "bevel-chart-title" not in head
+    assert "bevel-chart-legend" in head, "la légende, elle, reste due"
+
+
+def test_chart_header_legend_matches_the_traces_actually_drawn():
+    """La légende voyage dans `layout.meta` plutôt que d'être reconstituée par
+    l'appelant : la bande de baseline est conditionnelle, et une légende écrite
+    à côté finirait par décrire un graphe qui n'est plus celui-là."""
+    df = _hr_frame([60.0 + i * 0.1 for i in range(40)])
+    m = metrics.require("resting_hr")
+    with_band = dict(charts.metric_chart(df, m).layout.meta)["keys"]
+    without = dict(charts.metric_chart(df, m, show_baseline=False).layout.meta)["keys"]
+    assert [k[0] for k in with_band][0] == "Zone normale (28j)"
+    assert "Zone normale (28j)" not in [k[0] for k in without]
+    assert len(without) == len(with_band) - 1
 
 
 # --- graphe vide --------------------------------------------------------

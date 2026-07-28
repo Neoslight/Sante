@@ -135,11 +135,9 @@ with ui.card("HRV et SpO2 nocturnes"):
             fig.update_layout(**charts.base_layout("HRV nocturne (RMSSD)", "ms", 300))
             st.plotly_chart(fig, width="stretch")
     with col_d:
-        fig = charts.metric_chart(d, metric("spo2_avg"), height=300)
-        st.plotly_chart(fig, width="stretch")
+        charts.metric_block(d, metric("spo2_avg"), height=300)
 
-    fig = charts.metric_chart(d, metric("skin_temp_deviation_c"))
-    st.plotly_chart(fig, width="stretch")
+    charts.metric_block(d, metric("skin_temp_deviation_c"))
 
 # =============================================================================
 # Disponibilité décomposée

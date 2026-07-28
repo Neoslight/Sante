@@ -603,7 +603,12 @@ def metric_chart(
             annotation_font_color=t["ink_muted"],
         )
 
-    fig.update_layout(**base_layout(title, y_title, height))
+    # Figure NUE : ni titre, ni légende, ni note. Ces trois lignes sont rendues
+    # en HTML au-dessus par `metric_block` (cf. `chart_header_html`), et la
+    # figure récupère toute sa boîte — marge haute de 8 px et rien d'autre.
+    layout = base_layout(None, y_title, height)
+    layout["showlegend"] = False
+    fig.update_layout(**layout)
     fr_date_axis(fig, valid[x])
     device_band(fig, valid, x)
     mark_partial_days(fig, df, x)
@@ -618,14 +623,25 @@ def metric_chart(
     # repos, l'axe démarrait à 60 quand la série descendait à 58,9.
     fit_y_range(fig, extra=(metric.target,) if metric.target is not None else ())
 
+    # Le chrome voyage AVEC la figure, dans `layout.meta`, plutôt que d'être
+    # recalculé par l'appelant : `metric_chart` est seul à savoir quelles traces
+    # il a posées (la bande de baseline est conditionnelle, la fenêtre de lissage
+    # vient du registre). Une légende reconstituée à côté finirait par décrire un
+    # graphe qui n'est plus celui-là.
+    note = ""
     if show_trend:
-        chart_note(fig, chart_note_text(
-            stats.trend(valid, metric.key, date_col=x),
-            len(valid) if show_confidence else None,
-        ), has_title=bool(title))
-    elif show_confidence and stats.confidence_note(len(valid)):
-        chart_note(fig, stats.confidence_note(len(valid)), has_title=bool(title))
+        note = chart_note_text(stats.trend(valid, metric.key, date_col=x),
+                                len(valid) if show_confidence else None)
+    elif show_confidence:
+        note = stats.confidence_note(len(valid))
 
+    keys: list[tuple[str, str, str]] = []
+    if use_baseline and len(valid) >= 5:
+        keys.append(("Zone normale (28j)", "band", _with_opacity(color, 0.08)))
+    keys.append(("Quotidien", "thin", color))
+    keys.append((f"Moyenne {ma_window}j", "thick", color))
+
+    fig.update_layout(meta=dict(title=title or "", note=note, keys=keys))
     return fig
 
 
@@ -775,6 +791,18 @@ def _sparkline_svg(series: pd.Series | None, color: str, width: int = 100, heigh
 #: détourne juste du seul qui compte. Une valeur en pleine forme reste lisible
 #: sur la sparkline, au-dessus de sa fourchette habituelle.
 ATTENTION_STATUSES = ("critical", "serious")
+
+
+def micro_sparkline(series: pd.Series | None, color: str,
+                    width: int = 60, height: int = 16) -> str:
+    """Courbe nue, sans repère ni point terminal, pour tenir en fin de ligne.
+
+    Version réduite de la sparkline des tuiles : ni baseline, ni fourchette, ni
+    marqueur — à cette taille, ils ne seraient que du bruit. Elle ne répond qu'à
+    « ça monte ou ça descend, et à quel point », ce qui est exactement ce qu'un
+    constat de niveau a besoin de montrer sans quitter sa ligne.
+    """
+    return _sparkline_svg(series, color, width=width, height=height)
 
 
 def kpi_card(
@@ -1569,31 +1597,76 @@ def intraday_hr(df: pd.DataFrame, zones_df: pd.DataFrame | None = None,
     return fig
 
 
-def chart_note(fig: go.Figure, text: str, has_title: bool) -> go.Figure:
-    """Note de contexte (pente, fiabilité) posée dans le BLOC TITRE du graphe,
-    et non en annotation flottante.
+#: Aspect de chaque entrée de légende, en écho au trait qu'elle désigne :
+#: une bande pour la zone normale, un filet fin pour le quotidien, un trait
+#: épais pour la moyenne glissante.
+LEGEND_KINDS = ("band", "thin", "thick")
 
-    C'est la correction d'une collision de texte systématique. Plotly dimensionne
-    automatiquement ses marges (`margin.autoexpand`) pour le titre, la légende et
-    les graduations — mais JAMAIS pour les annotations. Les deux notes visaient
-    `y=1.08` et `y=-0.20` en coordonnées papier, c'est-à-dire dans une marge
-    haute de 32 px déjà occupée par le titre et la légende, et dans une marge
-    basse de 8 px déjà occupée par les dates. Elles se posaient donc par-dessus,
-    de façon d'autant plus visible que le graphe était étroit.
 
-    Dans le bloc titre, la mise en page est calculée par Plotly avec le reste :
-    la collision devient impossible par construction plutôt que par réglage.
+def chart_header_html(meta: dict) -> str:
+    """Titre, note de contexte et légende d'un graphe — EN HTML, au-dessus de la
+    figure, jamais dedans.
+
+    C'est la correction d'une collision de texte que trois réglages successifs
+    n'avaient pas réglée, et ne pouvaient pas régler.
+
+    Ces trois lignes vivaient dans la figure Plotly : le titre dans `layout.title`,
+    la note en sous-titre ou en annotation `paper`, la légende en surimpression à
+    `y=1.02`. Or Plotly ne dimensionne ses marges (`margin.autoexpand`) que pour
+    le titre, la légende et les graduations — jamais pour les annotations — et il
+    n'empile pas ces éléments : titre, sous-titre et légende visent la MÊME bande
+    au-dessus du plot. Le seul graphe propre de la page « Progression » était le
+    fond de forme, et pour une raison qui dit tout : c'est le seul sans note, donc
+    le seul dont la bande n'était disputée par personne.
+
+    Tant que ces lignes restent en coordonnées papier, chaque correction est un
+    décalage à réajuster, qui recasse au premier changement de largeur de colonne.
+    En HTML, elles retrouvent un flux vertical normal : trois blocs empilés par le
+    navigateur, qui ne peuvent pas se chevaucher, et une classe CSS remplace les
+    quatre réglages. La figure, elle, récupère toute sa boîte — ce qui règle du
+    même coup la courbe qui débordait par le bas.
     """
+    if not meta:
+        return ""
     t = theme.active_tokens()
-    font = dict(size=11, color=t["ink_secondary"])
-    if has_title:
-        fig.update_layout(title=dict(subtitle=dict(text=text, font=font)))
-    else:
-        # Sans titre (le cas normal : la carte qui entoure le graphe le nomme
-        # déjà), la note PREND la place du titre plutôt que de flotter.
-        fig.update_layout(title=dict(text=text, font=font, x=0, xanchor="left"),
-                          margin=dict(t=30))
-    return fig
+    parts = []
+    if meta.get("title"):
+        parts.append(f'<div class="bevel-chart-title">{html.escape(meta["title"])}</div>')
+    if meta.get("note"):
+        parts.append(f'<div class="bevel-chart-note">{html.escape(meta["note"])}</div>')
+    keys = meta.get("keys") or []
+    if keys:
+        items = "".join(
+            f'<span class="bevel-chart-key">'
+            f'<i class="bevel-swatch bevel-swatch-{kind}" style="{"background" if kind == "band" else "color"}:{color}"></i>'
+            f"{html.escape(label)}</span>"
+            for label, kind, color in keys
+        )
+        parts.append(f'<div class="bevel-chart-legend">{items}</div>')
+    return f'<div class="bevel-chart-head">{"".join(parts)}</div>' if parts else ""
+
+
+def metric_block(df: pd.DataFrame, metric: Metric, *, decorate=None, **kwargs) -> None:
+    """Le graphe COMPLET : son en-tête HTML, puis sa figure.
+
+    Point d'entrée unique des pages. `metric_chart` reste la fabrique de la
+    figure seule (utile aux tests, qui n'ont pas de contexte Streamlit), mais
+    plus aucune page ne doit l'appeler directement : rendre la figure sans son
+    en-tête laisserait un graphe sans titre ni légende, et c'est justement ce
+    que la séparation rend possible.
+
+    `decorate(fig)` — pour le seul appelant qui a quelque chose à ajouter à la
+    figure (la ligne de métabolisme de base, page « Dépense »). Un point
+    d'accroche explicite plutôt qu'un retour de figure : rendre la figure à
+    l'appelant rouvrirait la porte à un `st.plotly_chart` sans en-tête.
+    """
+    fig = metric_chart(df, metric, **kwargs)
+    if decorate is not None:
+        decorate(fig)
+    header = chart_header_html(dict(fig.layout.meta or {}))
+    if header:
+        st.markdown(header, unsafe_allow_html=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def chart_note_text(trend_result: stats.Trend | None, n: int | None = None) -> str:

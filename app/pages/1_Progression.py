@@ -96,7 +96,7 @@ ctl_full = stats.ctl_atl_tsb(full_daily, load_col="cardio_load_total")
 # chose à lire. C'est la QUESTION qui tient l'en-tête, comme la date longue le
 # fait sur le Bilan.
 with common.page_head("Est-ce que je progresse ?"):
-    start, end = common.horizon_picker()
+    start, end, missing_days = common.horizon_picker()
 
 # Jours réellement MESURÉS uniquement : une journée à couverture partielle a une
 # FC de repos et une HRV calculées sur quelques heures. Les laisser entrer dans
@@ -132,15 +132,30 @@ as_of = pd.to_datetime(measured["local_date"]).max().date()
 # expliquer et la légende reste une simple date.
 hi_date = pd.to_datetime(full_daily["local_date"]).max().date()
 
-# Profondeur d'historique, annoncée UNIQUEMENT si elle limite la lecture. Un
-# badge « n=180 jours » confirmerait l'attendu et dépenserait de l'attention
-# pour rien — même règle que le badge de qualité du Bilan.
+# Profondeur d'historique : UN SEUL énoncé, et annoncé uniquement s'il limite la
+# lecture. Un badge « n=180 jours » confirmerait l'attendu et dépenserait de
+# l'attention pour rien — même règle que le badge de qualité du Bilan.
+#
+# Le sélecteur d'horizon écrivait sa propre mention de profondeur juste à côté.
+# Le lecteur recevait « 39 jours » puis « n=37 jours » en deux secondes sans
+# savoir lequel comptait — et les deux étaient justes, l'un comptant le
+# calendrier et l'autre les jours qui entrent réellement dans les régressions.
+# C'est ce dernier qui compte ici, donc c'est lui qui reste ; ce que le
+# sélecteur avait à dire devient une clause de ce badge.
 n_measured = len(measured)
-if n_measured < 90:
+badge_text = stats.confidence_label(n_measured) if n_measured < 90 else ""
+if missing_days:
+    # En semaines restantes, pas en seuil : c'est la seule forme dont
+    # l'utilisateur puisse faire quelque chose. Et sur l'horizon seulement —
+    # une tendance, elle, est déjà décidable à partir de dix jours mesurés.
+    weeks = max(1, round(missing_days / 7))
+    clause = f"horizon réglable dans ~{weeks} semaine{'s' if weeks > 1 else ''} de mesures"
+    badge_text = f"{badge_text} · {clause}" if badge_text else clause
+if badge_text:
     st.markdown(
         f'<span class="bevel-badge">'
         f'<span class="bevel-badge-dot" style="background:{theme.active_tokens()["ink_muted"]}">'
-        f"</span>{stats.confidence_label(n_measured)}</span>",
+        f"</span>{badge_text}</span>",
         unsafe_allow_html=True,
     )
 
@@ -174,6 +189,11 @@ trends = {
 verdict = stats.progress_verdict(
     trends, primary=PRIMARY,
     units={label: metric(key).unit.rstrip() for key, label in TRACKED},
+    # `missing_days` non nul = le sélecteur d'horizon n'a pas été rendu, faute
+    # d'historique. Le conseil du verdict doit dépendre de la MÊME condition,
+    # sinon la page retire le contrôle et souffle dans la même seconde
+    # d'« élargir l'horizon ».
+    can_widen=not missing_days,
 )
 
 with ui.card("Progression", info={
@@ -210,12 +230,20 @@ with ui.card("Progression", info={
                                      "qu'il arrive. Sa courbe est plus bas — c'est son "
                                      "niveau qui se lit, pas sa pente.",
 }):
+    # Nuances FUSIONNÉES quand elles disent la même chose : trois lignes de
+    # « aucune tendance nette » portent un seul bit d'information et occupent la
+    # place de trois signaux (cf. `stats.merge_nuances`).
     nuance_html = ""
-    for rank, (name, phrase, nst, _slope) in enumerate(verdict.nuances):
+    for rank, (name, phrase, nst, _slope) in enumerate(
+        stats.merge_nuances(verdict.nuances, span_days=n_measured)
+    ):
         # Budget couleur identique au Bilan : seule la nuance dominante, et
         # seulement si elle demande une décision, porte sa couleur de statut.
+        # Le glyphe neutre passe en encre EFFACÉE : à `ink_secondary`, il avait
+        # le même poids que le texte et la ligne se lisait comme une entrée de
+        # liste plutôt que comme une phrase.
         is_dominant = rank == 0 and nst in charts.ATTENTION_STATUSES
-        glyph_color = charts.status_hex(nst, t) if is_dominant else t["ink_secondary"]
+        glyph_color = charts.status_hex(nst, t) if is_dominant else t["ink_muted"]
         nuance_html += (
             f'<div class="bevel-nuance">'
             f'<span class="bevel-flag" style="color:{glyph_color}" '
@@ -232,22 +260,41 @@ with ui.card("Progression", info={
     # expliquer l'écart. Un déplacement chiffré n'est pas une inférence — c'est
     # une soustraction, vraie quelle que soit l'autocorrélation de la série.
     aside_html = ""
-    shift = stats.level_shift(_source("ctl"), "ctl", as_of, days=28)
+    ctl_src = _source("ctl")
+    shift = stats.level_shift(ctl_src, "ctl", as_of, days=28)
     if shift is not None:
         was, now, real_days = shift
         m_ctl = metric("ctl")
         span = (f"{round(real_days / 7)} dernières semaines" if real_days >= 10
                 else f"{real_days} derniers jours")
+        # Teinte d'IDENTITÉ du fond de forme, pas une couleur de statut : elle
+        # dit de quelle courbe on parle, elle ne juge pas la baisse. Le budget
+        # de statut de la page reste entier.
+        ctl_hue = t["series"][m_ctl.palette_index % len(t["series"])]
+        spark = charts.micro_sparkline(
+            ctl_src["ctl"].tail(real_days + 1), ctl_hue, width=60, height=16,
+        )
         aside_html = (
             f'<div class="bevel-verdict-aside">'
-            f"Fond de forme : <b>{m_ctl.format(was)} → {m_ctl.format(now)}</b> "
-            f"sur les {span} <span>(niveau, non testé)</span>"
-            f"<i>Le fond de forme n'entre pas dans le verdict — c'est une moyenne "
-            f"lissée, sa pente n'est pas testable.</i></div>"
+            f'<div class="bevel-verdict-aside-line">'
+            f"<span>Fond de forme <b>{m_ctl.format(was)} → {m_ctl.format(now)}</b> "
+            f"sur les {span}</span>"
+            f'<span class="bevel-aside-delta" style="color:{ctl_hue}">'
+            # Écart calculé sur les valeurs ARRONDIES, celles que le lecteur a
+            # sous les yeux : sinon « 35,0 → 28,5 » s'accompagne d'un « −6,4 »
+            # que personne ne peut refaire de tête.
+            f"{m_ctl.format_delta(m_ctl.rounded(now) - m_ctl.rounded(was))}</span>"
+            f'<span class="bevel-aside-spark">{spark}</span></div>'
+            f"<i>Niveau, non testé — le fond de forme n'entre pas dans le verdict : "
+            f"c'est une moyenne lissée, sa pente n'est pas testable.</i></div>"
         )
+    # Corps du verdict indexé sur ce qu'il affirme : un statut neutre est par
+    # définition une non-réponse, et l'écrire au corps réservé aux affirmations
+    # d'état lui donnerait l'autorité d'une conclusion qu'elle refuse de tirer.
+    soft = " bevel-verdict-soft" if verdict.status == "neutral" else ""
     st.markdown(
         f'<div class="bevel-verdict">'
-        f'<div class="bevel-verdict-headline">{verdict.headline}</div>'
+        f'<div class="bevel-verdict-headline{soft}">{verdict.headline}</div>'
         f'<div class="bevel-verdict-hint">{verdict.hint}</div>'
         f"{nuance_html}{aside_html}</div>",
         unsafe_allow_html=True,
@@ -282,13 +329,10 @@ with ui.card("VO2max — la mesure de référence", info=metric("vo2_max").how_r
             hint="Fitbit ne l'estime qu'après des séances de course avec GPS.",
         )
     else:
-        st.plotly_chart(
-            # `title=""` : la carte porte déjà « VO2max ». Le titre interne le
-            # répétait et occupait la ligne où la note de tendance doit tenir.
-            charts.metric_chart(measured, metric("vo2_max"), title="", show_trend=True,
-                                show_confidence=True, height=CHART_HEIGHT),
-            width="stretch",
-        )
+        # `title=""` : la carte porte déjà « VO2max ». Le titre interne le
+        # répétait et occupait la ligne où la note de tendance doit tenir.
+        charts.metric_block(measured, metric("vo2_max"), title="", show_trend=True,
+                            show_confidence=True, height=CHART_HEIGHT)
 
 # =============================================================================
 # Les deux signaux courts, côte à côte : ils racontent la même histoire que la
@@ -311,17 +355,11 @@ with ui.card("FC de repos & variabilité cardiaque", info={
     # et 320 ici, soit deux hauteurs de graphe dans une même colonne de lecture.
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(
-            charts.metric_chart(measured, metric("resting_hr"), show_trend=True,
-                                show_confidence=True, height=CHART_HEIGHT),
-            width="stretch",
-        )
+        charts.metric_block(measured, metric("resting_hr"), show_trend=True,
+                            show_confidence=True, height=CHART_HEIGHT)
     with c2:
-        st.plotly_chart(
-            charts.metric_chart(measured, metric("hrv_rmssd"), show_trend=True,
-                                show_confidence=True, height=CHART_HEIGHT),
-            width="stretch",
-        )
+        charts.metric_block(measured, metric("hrv_rmssd"), show_trend=True,
+                            show_confidence=True, height=CHART_HEIGHT)
 
 # =============================================================================
 # Fond de forme : la capacité réellement construite
@@ -360,12 +398,9 @@ with ui.card("Fond de forme (CTL)", info={
         # une pente et sa p-value, qui ne veulent rien dire sur une moyenne
         # exponentielle (cf. `VERDICT_KEYS`). Sur cette courbe, c'est le niveau
         # et le sens du déplacement qui se lisent, pas un test.
-        st.plotly_chart(
-            charts.metric_chart(ctl_window, metric("ctl"), title="",
-                                height=CHART_HEIGHT, warmup_until=warmup_until,
-                                warmup_label="amorçage du modèle"),
-            width="stretch",
-        )
+        charts.metric_block(ctl_window, metric("ctl"), title="",
+                            height=CHART_HEIGHT, warmup_until=warmup_until,
+                            warmup_label="amorçage du modèle")
         maturity = float(ctl_full["ctl_maturity"].iloc[-1]) if "ctl_maturity" in ctl_full else 1.0
         if maturity < 1.0:
             # DEUX chiffres, et pas un seul unifié : ce n'est pas la même

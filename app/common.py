@@ -80,7 +80,9 @@ DEFAULT_HORIZON = "6 mois"
 HORIZON_MIN_FILL = 0.9
 
 
-def horizon_picker(key: str = "horizon", default: str = DEFAULT_HORIZON) -> tuple[str, str]:
+def horizon_picker(
+    key: str = "horizon", default: str = DEFAULT_HORIZON,
+) -> tuple[str, str, int | None]:
     """Sélecteur d'horizon long, rendu EN PAGE et non en barre latérale.
 
     `date_range_picker` reste le réglage partagé des pages de séries ; celui-ci
@@ -96,7 +98,17 @@ def horizon_picker(key: str = "horizon", default: str = DEFAULT_HORIZON) -> tupl
     qu'il a déjà tout essayé, et que la page n'a effectivement rien de plus à
     dire. Ils réapparaissent d'eux-mêmes à mesure que l'historique s'allonge.
 
-    Renvoie `(start, end)` en ISO, bornés par l'historique réellement présent.
+    Renvoie `(start, end, missing_days)` : les bornes en ISO, et le nombre de
+    jours de mesure qui MANQUENT encore avant qu'un réglage d'horizon existe —
+    `None` dès qu'un sélecteur a été rendu.
+
+    Ce troisième terme sort d'ici plutôt que d'être écrit en légende sous le
+    contrôle absent. Une légende à cet endroit annonçait la profondeur
+    d'historique une deuxième fois, à quelques centimètres du badge qui la donne
+    déjà — et avec un autre nombre, puisque le badge compte les jours MESURÉS et
+    le sélecteur les jours de calendrier. Deux chiffres pour une seule question,
+    dont aucun ne disait lequel comptait. L'appelant en fait une clause de son
+    badge, ou rien.
     """
     lo, hi = queries.date_bounds()
     lo, hi = pd.Timestamp(lo).date(), pd.Timestamp(hi).date()
@@ -107,14 +119,13 @@ def horizon_picker(key: str = "horizon", default: str = DEFAULT_HORIZON) -> tupl
         if months is None or depth_days >= months * 30 * HORIZON_MIN_FILL
     }
     if len(available) == 1:
-        # « Tout » seul est un contrôle mort lui aussi : on écrit la profondeur
-        # et le seuil du prochain palier, plutôt qu'un bouton qui ne fait rien.
+        # « Tout » seul est un contrôle mort lui aussi : rien n'est rendu.
+        #
+        # Le manque est exprimé en jours RESTANTS, jamais en seuil. « à partir
+        # de 81 jours » est une constante interne qui a fui à l'écran : personne
+        # ne peut deviner d'où sort 81, ni ce qu'il faut en faire.
         nxt = min(m for m in HORIZONS.values() if m is not None)
-        st.caption(
-            f"{depth_days} jours d'historique — l'horizon se règlera à partir de "
-            f"{int(nxt * 30 * HORIZON_MIN_FILL)} jours."
-        )
-        return str(lo), str(hi)
+        return str(lo), str(hi), max(0, int(nxt * 30 * HORIZON_MIN_FILL) - depth_days)
 
     choice = st.segmented_control(
         "Horizon", list(available.keys()),
@@ -130,7 +141,7 @@ def horizon_picker(key: str = "horizon", default: str = DEFAULT_HORIZON) -> tupl
         # `DateOffset(months=…)` et non `timedelta(days=30 * n)` : « 3 mois »
         # doit tomber sur le même quantième, pas sur 90 jours calendaires.
         start = max(lo, (pd.Timestamp(hi) - pd.DateOffset(months=months)).date())
-    return str(start), str(hi)
+    return str(start), str(hi), None
 
 
 #: Noms de jours et de mois écrits à la main : le serveur qui fait tourner
@@ -161,16 +172,28 @@ def format_fr_date(d: dt.date, weekday: bool = True, year: bool = True) -> str:
 PAGE_TITLE = "Santé — {}"
 
 
-def head_title_html(text: str) -> str:
+def head_title_html(text: str, page_title: bool = False) -> str:
     """La ligne de titre d'une page, en HTML.
 
     UNE seule définition pour les deux gabarits d'en-tête : la date longue du
     Bilan, prise entre ses chevrons de navigation, et la question qui tient
     l'en-tête des pages de série. Ce sont deux mises en page différentes mais
-    la même ligne typographique — dupliquée, elle divergeait au premier réglage.
+    la même famille typographique — dupliquée, elle divergeait au premier
+    réglage.
+
+    `page_title` monte au cran supérieur (22 px). Les deux en-têtes étaient au
+    MÊME corps, 15 px, et c'est justement le problème : sur le Bilan, la date
+    tient le centre d'une barre de commandes compacte et l'entourage lui donne
+    son poids ; seule en haut à gauche d'une page de série, la même taille
+    retombe au rang d'intitulé de section. Or c'est le titre de la page et sa
+    question directrice.
+
+    La date du Bilan, elle, reste à 15 px : elle vit dans une barre dont les
+    boutons font 32 px de haut, et la grossir déséquilibrerait la barre entière
+    pour un gain nul — l'entourage fait déjà le travail.
     """
-    return (f'<div class="bevel-dayhead"><span class="bevel-daydate">'
-            f"{text}</span></div>")
+    cls = "bevel-daydate bevel-pagetitle" if page_title else "bevel-daydate"
+    return f'<div class="bevel-dayhead"><span class="{cls}">{text}</span></div>'
 
 
 def page_head(title: str, right: bool = True):
@@ -189,11 +212,11 @@ def page_head(title: str, right: bool = True):
     """
     with st.container(key="pagehead"):
         if not right:
-            st.markdown(head_title_html(title), unsafe_allow_html=True)
+            st.markdown(head_title_html(title, page_title=True), unsafe_allow_html=True)
             return None
         left_col, right_col = st.columns([3, 2], vertical_alignment="center")
         with left_col:
-            st.markdown(head_title_html(title), unsafe_allow_html=True)
+            st.markdown(head_title_html(title, page_title=True), unsafe_allow_html=True)
         return right_col
 
 

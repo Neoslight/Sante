@@ -237,6 +237,12 @@ def inject_css() -> None:
         .bevel-kpi-status-label   le libellé de statut seul (couleur inline)
         .bevel-kpi-spark          la sparkline SVG inline
         .bevel-kpi-scale          bornes min/max de la fenêtre, sous la sparkline
+        .bevel-chart-head         en-tête de graphe (conteneur des trois lignes)
+        .bevel-chart-title        titre du graphe, quand la carte ne le nomme pas
+        .bevel-chart-note         pente et réserve de fiabilité
+        .bevel-chart-legend       la légende, hors de la figure Plotly
+        .bevel-chart-key          une entrée de légende
+        .bevel-swatch             son témoin (-band / -thin / -thick)
         .bevel-group-note         légende du pointillé, au bout de l'intitulé
         .bevel-spark-line         la courbe (teinte pilotée par --bevel-spark)
         .bevel-spark-fill         l'aire sous la courbe
@@ -273,6 +279,7 @@ def inject_css() -> None:
         .bevel-daystrip-dotwrap   centrage de la pastille sur son bouton
         .bevel-dayhead            en-tête du jour sélectionné (conteneur)
         .bevel-daydate            date longue en français, en-tête du jour
+        .bevel-pagetitle          le même, au cran de titre de page (22 px)
         .bevel-daymeta            ligne méta sous la date (historique, etc.)
         .bevel-badge              badge qualité de données (conteneur)
         .bevel-badge-dot          pastille du badge qualité de données
@@ -561,6 +568,67 @@ def css() -> str:
             --bevel-spark-fill: var(--bevel-spark-cold-fill);
             --bevel-spark-dot: {t['ink_primary']};
         }}
+        /* En-tête de graphe (`charts.chart_header_html`) : titre, note de
+           contexte, légende — TROIS LIGNES EMPILÉES, en HTML, au-dessus de la
+           figure Plotly.
+
+           Elles vivaient dans la figure, où titre, sous-titre et légende visent
+           tous la même bande au-dessus du plot : Plotly ne les empile pas et ne
+           dimensionne aucune marge pour les annotations. Chaque correction était
+           un décalage en coordonnées papier, à réajuster à la largeur de colonne
+           suivante. Ici, c'est le navigateur qui empile, et deux blocs de flux
+           normal ne peuvent pas se chevaucher. */
+        .bevel-chart-head {{
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 8px;
+        }}
+        .bevel-chart-title {{
+            color: {t['ink_primary']};
+            font-size: 13px;
+            font-weight: 500;
+        }}
+        .bevel-chart-note {{
+            color: {t['ink_secondary']};
+            font-size: 11px;
+        }}
+        .bevel-chart-legend {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            color: {t['ink_muted']};
+            font-size: 11px;
+        }}
+        .bevel-chart-key {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }}
+        /* Le témoin reprend l'ASPECT du trait qu'il désigne, pas seulement sa
+           couleur : une bande pleine, un filet fin, un trait épais. Trois
+           pastilles identiques de teintes voisines n'auraient rien distingué —
+           le quotidien et sa moyenne partagent la même couleur. */
+        .bevel-swatch {{
+            display: inline-block;
+            width: 12px;
+            flex: none;
+        }}
+        .bevel-swatch-band {{
+            height: 8px;
+            border-radius: 8px;
+        }}
+        .bevel-swatch-thin {{
+            height: 0;
+            border-top: 1px solid currentColor;
+            opacity: 0.55;
+        }}
+        .bevel-swatch-thick {{
+            height: 0;
+            border-top: 3px solid currentColor;
+        }}
+
         /* Bornes min/max de la fenêtre affichée, sous la sparkline : sans
            elles, l'échelle automatique donne la même allure à une série qui
            varie de 2 % et à une qui double. */
@@ -841,6 +909,17 @@ def css() -> str:
             font-weight: 500;
             letter-spacing: -0.02em;
         }}
+        /* Verdict NON CONCLUANT : un cran plus bas, à l'échelon « verdict » de
+           l'échelle (22 px) plutôt qu'à celui des métriques (32 px). Le poids
+           typographique doit suivre le contenu informationnel, pas la position
+           dans le gabarit — « Rien de mesurable » est une non-réponse assumée,
+           et l'écrire au corps réservé aux affirmations d'état lui donnait
+           l'autorité d'une conclusion qu'elle refuse justement de tirer.
+           Le jour où une pente conclut, le verdict retrouve ses 32 px : le
+           changement de corps devient lui-même une information. */
+        .bevel-verdict-headline.bevel-verdict-soft {{
+            font-size: 22px;
+        }}
         .bevel-verdict-hint {{
             color: {t['ink_secondary']};
             font-size: 13px;
@@ -865,9 +944,32 @@ def css() -> str:
             color: {t['ink_secondary']};
             font-size: 13px;
         }}
+        /* La ligne de constat AU MÊME CORPS que les nuances : c'est un troisième
+           registre à côté du verdict et des nuances, pas une note de bas de
+           carte. Elle portait pourtant la seule information réelle de la carte —
+           une baisse de fond de 18 % — sous une phrase de 32 px annonçant qu'il
+           ne se passe rien. */
+        .bevel-verdict-aside-line {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
         .bevel-verdict-aside b {{
             color: {t['ink_primary']};
             font-weight: 500;
+        }}
+        /* L'écart en teinte d'IDENTITÉ de la métrique, jamais en couleur de
+           statut : il dit de quelle courbe on parle, il ne juge pas. Le budget
+           de statut reste intact. */
+        .bevel-aside-delta {{
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+        }}
+        .bevel-aside-spark {{
+            display: inline-flex;
+            align-items: center;
+            opacity: 0.75;
         }}
         /* La raison de l'exclusion, en encre la plus effacée : elle répond à une
            question qu'on ne se pose qu'une fois (« pourquoi le fond n'est-il pas
@@ -1144,6 +1246,16 @@ def css() -> str:
             font-size: 15px;
             font-weight: 600;
             letter-spacing: -0.015em;
+        }}
+        /* Titre d'une page de série : le cran au-dessus de la date du Bilan.
+           Les deux partagent `.bevel-daydate` (couleur, graisse, chasse) et ne
+           divergent que par la taille — 22 px, l'échelon du verdict. Seule en
+           haut à gauche, une question à 15 px se lit comme un intitulé de
+           section ; sur le Bilan, la date reste à 15 px parce qu'elle tient le
+           centre d'une barre de boutons de 32 px qui lui donne son poids. */
+        .bevel-pagetitle {{
+            font-size: 22px;
+            letter-spacing: -0.02em;
         }}
         .bevel-daymeta {{
             color: {t['ink_secondary']};

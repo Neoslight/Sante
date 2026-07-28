@@ -74,6 +74,25 @@ def test_format_handles_missing_values():
     assert m.format(58) == "58 bpm"
 
 
+def test_rounded_makes_on_screen_arithmetic_add_up():
+    """« 35,0 → 28,5 » accompagné d'un « −6,4 » : l'écart était calculé sur les
+    valeurs brutes, et le lecteur qui le refait de tête trouve −6,5."""
+    m = metrics.require("ctl")
+    was, now = 34.96, 28.54
+    assert m.format(was, with_unit=False) == "35,0"
+    assert m.format(now, with_unit=False) == "28,5"
+    # Sur les valeurs brutes, l'écart affiché contredit les deux bornes
+    # affichées : c'est le défaut que `rounded` existe pour supprimer.
+    assert m.format_delta(now - was) == "-6,4"
+    assert m.format_delta(m.rounded(now) - m.rounded(was)) == "-6,5"
+
+
+def test_rounded_follows_the_precision_of_each_format():
+    assert metrics.require("resting_hr").rounded(59.6) == 60      # "{:.0f}"
+    assert metrics.require("vo2_max").rounded(54.24) == 54.2      # "{:.1f}"
+    assert metrics.require("vo2_max").rounded(None) is None
+
+
 def test_require_raises_on_unknown_key():
     with pytest.raises(KeyError):
         metrics.require("inexistant")
