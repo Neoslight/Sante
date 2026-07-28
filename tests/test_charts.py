@@ -131,13 +131,17 @@ def test_figures_without_a_title_serialise_without_one():
 
 
 # --- axe de dates en français ------------------------------------------------
-def test_fr_date_axis_writes_french_labels_with_the_year_only_once():
+def test_fr_date_axis_writes_french_labels_and_never_the_year():
+    """L'année vivait sur le premier tick. Sur un axe réduit à trois
+    graduations, elle doublait la largeur d'une étiquette sur trois pour une
+    information que la page donne déjà trois fois ailleurs (date longue de
+    l'en-tête, plage de la carte « Repères », pied de page)."""
     dates = pd.date_range("2026-06-29", periods=28)
     fig = charts.fr_date_axis(go.Figure(), dates)
     labels = list(fig.layout.xaxis.ticktext)
-    assert labels[0] == "29 juin 2026"
+    assert labels[0] == "29 juin"
     assert all("juin" in x or "juil." in x for x in labels)
-    assert sum("2026" in x for x in labels) == 1
+    assert not any("2026" in x for x in labels)
 
 
 def test_fr_date_axis_always_includes_the_last_day():
@@ -411,10 +415,49 @@ def test_visual_weight_puts_the_measurement_above_its_reference():
     smooth = next(tr for tr in fig.data if str(tr.name).startswith("Moyenne"))
 
     assert band.fillcolor == charts._with_opacity(hue, 0.10)
-    assert daily.line.color == charts._with_opacity(hue, 0.35)
+    assert daily.marker.color == charts._with_opacity(hue, 0.30)
     assert smooth.line.color == hue, "la moyenne est la seule trace en teinte pleine"
-    assert smooth.line.width > daily.line.width
+    # À diamètre égal, c'est l'OPACITÉ et la continuité qui séparent les deux :
+    # un trait plein sur toute la largeur pèse plus que des disques à 30 % posés
+    # un par jour. Le rang tient donc sur la teinte, pas sur la taille.
+    assert smooth.line.width >= daily.marker.size
     assert smooth.line.shape == "spline"
+
+
+def test_the_daily_measurement_is_a_scatter_not_a_line():
+    """Relier deux mesures quotidiennes AJOUTE une affirmation qui n'a pas été
+    mesurée — une continuité entre deux points distants d'un jour — et la
+    polyligne enjambait au passage les journées écartées comme si de rien
+    n'était. En points, toute la donnée reste et seule l'interpolation part."""
+    fig = charts.metric_chart(_frame(), _metric(palette_index=0))
+    daily = next(tr for tr in fig.data if tr.name == "Quotidien")
+    assert daily.mode == "markers"
+    assert daily.line.width in (None, 0)
+
+
+def test_a_gap_in_the_measurements_stays_a_gap():
+    """Trou de trois jours au milieu : les points le montrent, un segment le
+    comblerait."""
+    df = pd.DataFrame({
+        "local_date": pd.date_range("2026-01-01", periods=12),
+        "test_metric": [50.0, 51.0, 50.0, 52.0, None, None, None, 49.0, 50.0, 51.0, 50.0, 52.0],
+    })
+    fig = charts.metric_chart(df, _metric())
+    daily = next(tr for tr in fig.data if tr.name == "Quotidien")
+    assert len(daily.x) == 9, "les jours sans mesure ne sont pas des points"
+
+
+def test_the_daily_hover_says_when_a_day_was_only_partly_measured():
+    """Le détail vit dans le survol : c'est ce qui autorise à être aussi sévère
+    sur les couches au repos sans rien perdre."""
+    df = pd.DataFrame({
+        "local_date": pd.date_range("2026-01-01", periods=6),
+        "test_metric": [50.0] * 6,
+        "is_partial_day": [False, False, True, False, False, False],
+    })
+    fig = charts.metric_chart(df, _metric())
+    daily = next(tr for tr in fig.data if tr.name == "Quotidien")
+    assert sum("jour partiel" in txt for txt in daily.text) == 1
 
 
 def test_the_smoothed_curve_carries_its_value_at_the_end():
@@ -426,14 +469,62 @@ def test_the_smoothed_curve_carries_its_value_at_the_end():
     assert dot.mode == "markers" and dot.marker.size == 4
 
 
-def test_the_dotted_baseline_never_outshines_the_measurement():
-    """Un repère plus visible que la mesure qu'il situe inverse le sens du
-    graphe."""
+def test_the_rolling_median_is_not_drawn_twice():
+    """La bande est CENTRÉE sur la normale glissante : le pointillé en était la
+    ligne médiane, soit un second encodage de « où est ma normale ». La bande
+    gagne le duel, parce qu'elle porte en plus l'amplitude."""
     fig = charts.metric_chart(_frame(), _metric(baseline="personal"))
-    dotted = next(tr for tr in fig.data
-                  if tr.line.dash == "dot" and tr.showlegend is False)
-    assert dotted.line.width == 1
-    assert "rgba" in dotted.line.color, "encre effacée, pas une couleur pleine"
+    assert not any(tr.line.dash == "dot" for tr in fig.data), "plus de médiane dessinée"
+    assert any(tr.fill == "toself" for tr in fig.data), "la bande, elle, reste"
+
+
+def test_the_rolling_median_survives_in_the_tooltip_only():
+    """Retirée du dessin, pas de l'information : la couche continue de répondre
+    au survol, avec les bornes de la zone."""
+    fig = charts.metric_chart(_frame(), _metric(baseline="personal"))
+    carrier = next(tr for tr in fig.data
+                   if tr.line.width == 0 and tr.fill is None and tr.text is not None)
+    assert "Normale" in carrier.text[0] and "zone" in carrier.text[0]
+
+
+def test_the_dotted_baseline_lives_on_in_sparklines():
+    """La règle qui remplace l'ancienne : bande dans les graphes, pointillé dans
+    les sparklines — là où la place manque pour une bande lisible — jamais les
+    deux dans le même dessin."""
+    svg = charts._sparkline_svg(pd.Series([10.0, 12.0, 11.0, 14.0]), "#123456", baseline=11.5)
+    assert "stroke-dasharray" in svg
+
+
+def test_the_band_envelope_is_smoothed_before_being_drawn():
+    """Les deux bords sont une médiane ± sigma recalculés chaque jour : leur
+    dentelure est du bruit de CONTEXTE, pas de la donnée. Un repère n'a aucun
+    besoin de fidélité au jour près."""
+    n = 40
+    rough = [50.0 + (8.0 if i % 2 else -8.0) for i in range(n)]
+    df = pd.DataFrame({"local_date": pd.date_range("2026-01-01", periods=n),
+                       "test_metric": rough})
+    fig = charts.metric_chart(df, _metric(baseline="personal"))
+    band = next(tr for tr in fig.data if tr.fill == "toself")
+    upper = list(band.y)[:len(band.y) // 2]
+    raw = charts.stats.rolling_baseline(df, "test_metric")["upper"].dropna()
+
+    def _jag(vals):
+        vals = [v for v in vals if v == v]
+        return sum(abs(b - a) for a, b in zip(vals, vals[1:])) / max(1, len(vals) - 1)
+
+    assert _jag(upper) < _jag(raw), "l'enveloppe tracée est plus calme que la brute"
+
+
+def test_the_band_never_ends_on_a_vertical_wall():
+    """`rolling_baseline` demande cinq points : la bande naissait quatre jours
+    après la série, d'un coup et à pleine largeur. L'œil lit ce mur comme un
+    événement du corps alors que c'est un événement du calcul."""
+    fig = charts.metric_chart(_frame(), _metric(baseline="personal"))
+    band = next(tr for tr in fig.data if tr.fill == "toself")
+    stops = band.fillgradient.colorscale
+    assert band.fillgradient.type == "horizontal"
+    assert stops[0][1].endswith(",0.0)") and stops[-1][1].endswith(",0.0)")
+    assert stops[1][1] == stops[-2][1], "opacité pleine sur tout le corps de la bande"
 
 
 def test_the_last_day_is_always_a_tick():
@@ -488,9 +579,11 @@ def test_horizontal_grid_is_visible_ink_and_bounded():
     layout = charts.base_layout(y_title="u")
     assert layout["yaxis"]["showgrid"] is True
     assert layout["yaxis"]["gridcolor"] == theme.active_tokens()["grid_line"]
-    # Trois graduations : la valeur exacte se lit au bout de la courbe, l'axe ne
-    # donne plus que l'ordre de grandeur.
-    assert layout["yaxis"]["nticks"] == 3
+    # DEUX graduations : la valeur exacte se lit au bout de la courbe, l'axe ne
+    # donne plus que l'ordre de grandeur — et la grille traverse la bande de zone
+    # normale, deux trames d'opacité voisines faisant un moiré et non deux
+    # niveaux de lecture.
+    assert layout["yaxis"]["nticks"] == 2
 
 
 # --- zone d'amorçage -----------------------------------------------------

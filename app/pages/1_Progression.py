@@ -81,6 +81,25 @@ VERDICT_KEYS = ("vo2_max", "resting_hr", "hrv_rmssd")
 CHART_HEIGHT = 300
 CHART_HEIGHT_HALF = 240
 
+#: L'anatomie commune des graphes, dite UNE fois — les trois cartes en portaient
+#: chacune une copie littérale, et une copie divergente est un mode d'emploi qui
+#: décrit un dessin qui n'est plus là.
+#:
+#: Deux couches ont disparu du dessin depuis la version précédente de ce texte :
+#: le pointillé de normale glissante (redondant avec la bande, qui est centrée
+#: sur lui) et les segments entre mesures quotidiennes (une continuité jamais
+#: mesurée). Les deux répondent maintenant au survol.
+READ_CHART = (
+    "Les points sont les mesures quotidiennes — un point, une journée, et un trou "
+    "là où la journée a été écartée. Le trait épais est leur moyenne glissante, "
+    "avec sa valeur écrite au bout. La bande teintée est ta zone normale sur "
+    "28 jours : médiane glissante à plus ou moins un écart-type robuste, dont "
+    "l'enveloppe est elle-même lissée sur une semaine — c'est un repère, pas une "
+    "mesure, et sa dentelure au jour près serait du bruit. Elle s'éteint à ses "
+    "deux bouts, là où l'historique ne suffit pas encore à la calculer. Survole "
+    "pour la valeur exacte du jour, la normale et les bornes de la zone."
+)
+
 # =============================================================================
 # Données : historique COMPLET d'abord, fenêtre ensuite.
 #
@@ -247,6 +266,27 @@ verdict = stats.progress_verdict(
     # d'« élargir l'horizon ».
     can_widen=not missing_days,
 )
+
+#: Le sous-titre de tendance ne s'affiche QUE s'il distingue les graphes.
+#:
+#: « aucune tendance nette · historique encore court » apparaissait à l'identique
+#: sous les trois graphes testés, et redisait ce que la carte de verdict venait
+#: d'annoncer en haut de page — trois lignes de gris pour un seul bit
+#: d'information déjà donné. C'est exactement la règle appliquée aux nuances par
+#: `stats.merge_nuances` : tant que les métriques partagent le même statut, la
+#: carte de verdict le porte seule. Le jour où l'une se détache, les lignes
+#: réapparaissent, et c'est alors la RUPTURE DE MOTIF qui fait signal.
+#:
+#: Note recalculée exactement comme `metric_chart` la calcule (sur les lignes
+#: non nulles de la métrique, pas sur `measured` entier) : une note prédite sur
+#: un autre effectif pourrait basculer de palier de fiabilité et faire croire à
+#: une différence là où il n'y en a pas.
+def _note(key: str) -> str:
+    sub = measured.dropna(subset=[key]) if key in measured.columns else measured.iloc[0:0]
+    return charts.chart_note_text(stats.trend(sub, key) if len(sub) else None, len(sub))
+
+
+SHOW_NOTE = len({_note(k) for k in VERDICT_KEYS}) > 1
 
 with ui.card("Progression", info={
     "Le verdict": "Il ne regarde QUE des pentes significatives : une régression dont "
@@ -497,7 +537,7 @@ with ui.card("Repères", info={
 # =============================================================================
 with ui.card("VO2max — la mesure de référence", info={
     "Ce que c'est": metric("vo2_max").how_read,
-    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+    "Lire le graphe": READ_CHART,
 }):
     if "vo2_max" not in measured.columns or measured["vo2_max"].dropna().empty:
         ui.empty_state(
@@ -507,8 +547,9 @@ with ui.card("VO2max — la mesure de référence", info={
     else:
         # `title=""` : la carte porte déjà « VO2max ». Le titre interne le
         # répétait et occupait la ligne où la note de tendance doit tenir.
-        charts.metric_block(measured, metric("vo2_max"), title="", show_trend=True,
-                            show_confidence=True, height=CHART_HEIGHT)
+        charts.metric_block(measured, metric("vo2_max"), title="",
+                            show_trend=SHOW_NOTE, show_confidence=SHOW_NOTE,
+                            height=CHART_HEIGHT)
 
 # =============================================================================
 # Les deux signaux courts, côte à côte : ils racontent la même histoire que la
@@ -517,7 +558,7 @@ with ui.card("VO2max — la mesure de référence", info={
 with ui.card("FC de repos & variabilité cardiaque", info={
     metric("resting_hr").short: f"{metric('resting_hr').what} {metric('resting_hr').how_read}",
     metric("hrv_rmssd").short: f"{metric('hrv_rmssd').what} {metric('hrv_rmssd').how_read}",
-    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+    "Lire le graphe": READ_CHART,
     "Pourquoi les deux ensemble": "Elles bougent en miroir : une FC de repos qui descend "
                                   "pendant que la variabilité monte est la signature d'une "
                                   "condition qui s'améliore. Quand elles divergent, c'est "
@@ -537,11 +578,11 @@ with ui.card("FC de repos & variabilité cardiaque", info={
     c1, c2 = st.columns(2)
     with c1:
         charts.metric_block(measured, metric("resting_hr"), title=LABELS["resting_hr"],
-                            show_trend=True, show_confidence=True,
+                            show_trend=SHOW_NOTE, show_confidence=SHOW_NOTE,
                             height=CHART_HEIGHT_HALF)
     with c2:
         charts.metric_block(measured, metric("hrv_rmssd"), title=LABELS["hrv_rmssd"],
-                            show_trend=True, show_confidence=True,
+                            show_trend=SHOW_NOTE, show_confidence=SHOW_NOTE,
                             height=CHART_HEIGHT_HALF)
 
 # =============================================================================
@@ -558,7 +599,7 @@ with ui.card("Fond de forme (CTL)", info={
                            "cardio absorbée en moyenne sur six semaines, en unité "
                            "arbitraire : seuls comptent le SENS et l'ampleur relative "
                            "du déplacement, pas la valeur absolue.",
-    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+    "Lire le graphe": READ_CHART,
     "Maturité du modèle": "La moyenne se calcule sur 42 jours. Tant que l'historique est "
                           "plus court, la courbe monte mécaniquement depuis zéro — c'est "
                           "l'amorçage du modèle, pas une progression. La portion grisée "
@@ -582,9 +623,15 @@ with ui.card("Fond de forme (CTL)", info={
         # une pente et sa p-value, qui ne veulent rien dire sur une moyenne
         # exponentielle (cf. `VERDICT_KEYS`). Sur cette courbe, c'est le niveau
         # et le sens du déplacement qui se lisent, pas un test.
+        #
+        # `show_y=False` : la carte dit elle-même que le fond de forme est en
+        # unité arbitraire, « seuls comptent le SENS et l'ampleur relative du
+        # déplacement, pas la valeur absolue ». Des graduations sous cette phrase
+        # invitent à lire précisément ce qu'elle demande de ne pas lire — et le
+        # Bilan applique déjà la règle sur la même grandeur.
         charts.metric_block(ctl_window, metric("ctl"), title="",
                             height=CHART_HEIGHT, warmup_until=warmup_until,
-                            warmup_label="amorçage du modèle")
+                            warmup_label="amorçage du modèle", show_y=False)
         # LE FAIT de la page, à la place de la mention technique.
         #
         # La courbe passe sous sa zone normale sur tout le dernier tiers de la

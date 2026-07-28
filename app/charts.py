@@ -192,11 +192,12 @@ def base_layout(title: str | None = None, y_title: str | None = None, height: in
                     tickfont=dict(color=t["ink_muted"])),
         yaxis=dict(
             title=y_title,
-            # `grid_line` (encre à 6 %) et non `grid` (couleur pleine, invisible
-            # sur la surface des cartes). Trois graduations : la valeur exacte se
+            # `grid_line` (encre à 4,5 %) et non `grid` (couleur pleine, invisible
+            # sur la surface des cartes). DEUX graduations : la valeur exacte se
             # lit désormais au bout de la courbe, l'axe ne sert plus qu'à donner
-            # l'ordre de grandeur — au-delà de trois lignes il devient une trame.
-            showgrid=True, gridcolor=t["grid_line"], gridwidth=1, nticks=3,
+            # l'ordre de grandeur — au-delà de deux lignes il devient une trame,
+            # et cette trame concurrence la bande de zone normale qu'elle croise.
+            showgrid=True, gridcolor=t["grid_line"], gridwidth=1, nticks=2,
             zeroline=False, showline=False, tickfont=dict(color=t["ink_muted"]),
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
@@ -251,12 +252,19 @@ _MONTHS_ABBR_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin",
                    "juil.", "août", "sept.", "oct.", "nov.", "déc."]
 
 
-def fr_date_axis(fig: go.Figure, dates, max_ticks: int = 5) -> go.Figure:
+def fr_date_axis(fig: go.Figure, dates, max_ticks: int = 3) -> go.Figure:
     """Étiquettes d'axe X en français (« 29 juin », « 2 juil. »).
 
-    L'année n'est écrite qu'une fois, sur le premier tick : la répéter à chaque
-    graduation triple la largeur de l'étiquette pour une information qui ne
-    change pas d'un bout à l'autre d'une fenêtre de quatre semaines.
+    PAS d'année, nulle part. Elle vivait sur le premier tick, où elle doublait la
+    largeur de l'étiquette la plus à gauche pour une information que la page
+    donne déjà ailleurs (date longue de l'en-tête, plage de la carte « Repères »,
+    pied de page) et qui ne change pas d'un bout à l'autre d'une fenêtre de
+    quelques semaines. Sur un axe réduit à trois graduations, ce surcoût portait
+    sur un tiers des étiquettes.
+
+    Trois graduations, et non cinq : avec la valeur écrite au bout de la courbe
+    et la plage de dates dans la légende de carte, l'axe X ne sert plus qu'à
+    situer le début, le milieu et la fin.
     """
     d = pd.to_datetime(pd.Series(list(dates))).dropna().sort_values()
     if d.empty:
@@ -276,7 +284,6 @@ def fr_date_axis(fig: go.Figure, dates, max_ticks: int = 5) -> go.Figure:
         idx = sorted({int(round(i)) for i in np.linspace(0, len(d) - 1, max_ticks)})
     ticks = [d.iloc[i] for i in idx]
     labels = [f"{ts.day} {_MONTHS_ABBR_FR[ts.month - 1]}" for ts in ticks]
-    labels[0] = f"{labels[0]} {ticks[0].year}"
     # Dernière graduation un cran plus contrastée : c'est la date où s'arrête la
     # mesure, la seule que le lecteur cherche vraiment sur cet axe.
     if len(labels) > 1:
@@ -477,8 +484,17 @@ def grouped_bars(categories: list[str], series: list[tuple[str, list[float]]],
 # =============================================================================
 # Phase 4 — nouveaux composants
 # =============================================================================
+#: Lissage de l'ENVELOPPE de la bande, en jours calendaires. Voir `baseline_band`.
+BAND_SMOOTH_DAYS = 7
+
+#: Fraction de la largeur du graphe sur laquelle la bande s'éteint, à chaque
+#: bout. Voir `baseline_band`.
+BAND_FADE = 0.06
+
+
 def baseline_band(fig: go.Figure, baseline_df: pd.DataFrame, date_col: str = "local_date",
-                   label: str = "Baseline personnelle", color: str | None = None) -> go.Figure:
+                   label: str = "Baseline personnelle", color: str | None = None,
+                   fmt=None) -> go.Figure:
     """Bande médiane ± 1 sigma issue de `health.stats.rolling_baseline`.
 
     C'EST LE COMPOSANT LE PLUS IMPORTANT du dashboard : il transforme une
@@ -486,12 +502,40 @@ def baseline_band(fig: go.Figure, baseline_df: pd.DataFrame, date_col: str = "lo
     dire ; avec la bande, on voit d'un coup d'œil si 45 est dans la normale de
     la personne ou un écart notable.
 
-    `color` — la teinte d'identité de la métrique, à 8 % : la bande se lit alors
+    `color` — la teinte d'identité de la métrique, à 10 % : la bande se lit alors
     comme « MA zone normale pour cette métrique ». En gris d'encre (l'ancien
     défaut), elle passait pour une ombre portée ou un artefact de rendu sur fond
     sombre, c'est-à-dire pour un accident et non pour une information. La règle
     « pas de couleur catégorielle » visait à empêcher qu'on la confonde avec une
     série ; c'est l'opacité qui l'en distingue, pas l'absence de teinte.
+
+    Trois propriétés de tracé, toutes contre-intuitives, toutes voulues :
+
+    **1. L'enveloppe est LISSÉE avant d'être dessinée.** Les deux bords sont une
+    médiane glissante ± sigma recalculés chaque jour : leur silhouette est
+    dentelée, et cette dentelure est du bruit de contexte, pas de la donnée. Une
+    bande de référence n'a aucun besoin de fidélité au jour près — c'est même le
+    contraire de ce qu'elle dit. Le hover, lui, reporte les bornes RÉELLEMENT
+    tracées, pour que le chiffre ne contredise jamais le dessin.
+
+    **2. Ses deux bouts s'ÉTEIGNENT** (`fillgradient` horizontal, opacité nulle
+    aux extrémités). `rolling_baseline` demande cinq points avant de produire
+    quoi que ce soit : la bande naissait donc quatre jours après la série, d'un
+    seul coup et à pleine largeur. L'œil lit ce mur vertical comme un événement
+    du corps alors que c'est un événement du CALCUL. Une coupe franche est
+    toujours un mensonge à un bout ou à l'autre ; un fondu ne dit rien de faux.
+
+    **3. La normale glissante n'est PLUS dessinée.** La bande est centrée sur
+    elle : le pointillé en était la ligne médiane, soit un second encodage de
+    « où est ma normale ». La bande gagne le duel, parce qu'elle porte en plus
+    l'amplitude. La couche subsiste en trace invisible, pour le seul survol.
+    La règle qui en sort, et qui vaut partout : **bande dans les graphes,
+    pointillé dans les sparklines** (où la place manque pour une bande lisible,
+    cf. `_sparkline_svg`), jamais les deux dans le même dessin.
+
+    `fmt` — le formateur de la métrique (`Metric.format`), pour le survol. Sans
+    lui, un `%{y:.1f}` générique afficherait « 20.0 » là où la page écrit
+    partout ailleurs « 20,0 u ».
     """
     if baseline_df is None or baseline_df.empty:
         return fig
@@ -500,19 +544,42 @@ def baseline_band(fig: go.Figure, baseline_df: pd.DataFrame, date_col: str = "lo
         return fig
     t = theme.active_tokens()
     band_color = _with_opacity(color or t["ink_muted"], 0.10 if color else 0.14)
+
+    d = d.sort_values(date_col).copy()
+    d[date_col] = pd.to_datetime(d[date_col])
+    # `min_periods=1` : le lissage ne doit RIEN raccourcir, sinon il rouvre à un
+    # autre endroit le mur vertical que le fondu vient de fermer.
+    smooth = d.set_index(date_col)[["lower", "baseline", "upper"]].rolling(
+        f"{BAND_SMOOTH_DAYS}D", min_periods=1).mean()
+
     fig.add_trace(go.Scatter(
-        x=pd.concat([d[date_col], d[date_col][::-1]]),
-        y=pd.concat([d["upper"], d["lower"][::-1]]),
-        fill="toself", fillcolor=band_color, line=dict(width=0),
+        x=pd.concat([pd.Series(smooth.index), pd.Series(smooth.index[::-1])]),
+        y=pd.concat([smooth["upper"], smooth["lower"][::-1]]),
+        fill="toself", line=dict(width=0),
+        # `fillcolor` conservé : c'est la valeur de repli si le moteur de rendu
+        # ignore le dégradé, et le seul endroit où la teinte de la bande est
+        # lisible telle quelle.
+        fillcolor=band_color,
+        fillgradient=dict(type="horizontal", colorscale=[
+            [0.0, _with_opacity(color or t["ink_muted"], 0.0)],
+            [BAND_FADE, band_color],
+            [1.0 - BAND_FADE, band_color],
+            [1.0, _with_opacity(color or t["ink_muted"], 0.0)],
+        ]),
         hoverinfo="skip", showlegend=True, name=label,
     ))
-    # Normale glissante en encre EFFACÉE, jamais en clair : à `ink_secondary`
-    # ou plus, le repère était plus visible que la série quotidienne qu'il sert
-    # à situer. Un repère qui domine la mesure inverse le sens du graphe.
+
+    # Trace INVISIBLE : la couche de la normale glissante ne se dessine plus,
+    # mais elle continue de répondre quand on lui demande (cf. point 3 ci-dessus).
+    # Le détail vit dans le survol ; c'est ce qui permet d'être aussi sévère sur
+    # les couches au repos sans rien perdre.
+    f = fmt or (lambda v: f"{v:.1f}")
+    hover = [f"Normale {f(b)} · zone {f(lo)} → {f(hi)}"
+             for b, lo, hi in zip(smooth["baseline"], smooth["lower"], smooth["upper"])]
     fig.add_trace(go.Scatter(
-        x=d[date_col], y=d["baseline"], mode="lines",
-        line=dict(width=1, color=_with_opacity(t["ink_muted"], 0.7), dash="dot"),
-        hoverinfo="skip", showlegend=False,
+        x=smooth.index, y=smooth["baseline"], mode="lines",
+        line=dict(width=0), showlegend=False,
+        text=hover, hovertemplate="%{text}<extra></extra>",
     ))
     return fig
 
@@ -521,7 +588,7 @@ def metric_chart(
     df: pd.DataFrame, metric: Metric, x: str = "local_date", *,
     height: int = 320, show_baseline: bool | None = None, show_trend: bool = False,
     show_confidence: bool = False, title: str | None = None,
-    warmup_until=None, warmup_label: str = "amorçage",
+    warmup_until=None, warmup_label: str = "amorçage", show_y: bool = True,
 ) -> go.Figure:
     """LE composant central du dashboard : à partir d'un `Metric` du registre
     (health/metrics.py) et d'un DataFrame contenant sa colonne, déduit titre,
@@ -571,7 +638,8 @@ def metric_chart(
     use_baseline = (metric.baseline == "personal") if show_baseline is None else show_baseline
     if use_baseline and len(valid) >= 5:
         base_df = stats.rolling_baseline(valid, metric.key, date_col=x)
-        baseline_band(fig, base_df, date_col=x, label="Zone normale (28j)", color=color)
+        baseline_band(fig, base_df, date_col=x, label="Zone normale (28j)", color=color,
+                      fmt=metric.format)
 
     # Zone d'amorçage : une PROPRIÉTÉ d'une portion de courbe, donc dessinée sur
     # la courbe. Sur le fond de forme, les premiers jours ne mesurent pas encore
@@ -605,10 +673,28 @@ def metric_chart(
     # inversée — la bande de référence était l'objet le plus lourd du graphe et
     # la mesure quotidienne le plus léger, si bien que le décor dominait la
     # donnée. Chaque poids ci-dessous est donc un rang, pas un réglage isolé.
-    raw_hover = [metric.format(v) for v in valid[metric.key]]
+    # La mesure quotidienne est un NUAGE DE POINTS, pas une courbe.
+    #
+    # C'était l'objet le plus encreux de chaque graphe : sur la VO2max, la
+    # polyligne zigzaguait sur toute la hauteur pendant que la moyenne, qui est
+    # le message, occupait un tiers de l'espace. Or relier deux mesures
+    # quotidiennes par un segment AJOUTE une affirmation qui n'a pas été
+    # mesurée — une continuité entre deux points distants d'un jour. En points,
+    # toute l'information reste (chaque mesure est là, à sa valeur exacte) et
+    # seule l'interpolation disparaît, qui n'en portait aucune.
+    #
+    # Second gain, non trivial : les journées à couverture insuffisante sont
+    # écartées en amont, et la polyligne les ENJAMBAIT comme si de rien n'était.
+    # Un trou de mesure redevient un trou à l'écran.
+    partial = pd.Series(False, index=valid.index)
+    for flag in ("is_partial_day", "is_missing_day"):
+        if flag in df.columns:
+            partial = partial | df.loc[valid.index, flag].fillna(False).astype(bool)
+    raw_hover = [f"{metric.format(v)}{' · jour partiel' if p else ''}"
+                 for v, p in zip(valid[metric.key], partial)]
     fig.add_trace(go.Scatter(
-        x=valid[x], y=valid[metric.key], mode="lines", name="Quotidien",
-        line=dict(color=_with_opacity(color, 0.35), width=1),
+        x=valid[x], y=valid[metric.key], mode="markers", name="Quotidien",
+        marker=dict(color=_with_opacity(color, 0.30), size=2.5),
         text=raw_hover, hovertemplate="%{text}<extra>Quotidien</extra>",
     ))
 
@@ -674,6 +760,17 @@ def metric_chart(
     # registre, la droite pour l'étiquette de fin de courbe, le bas pour les dates.
     layout["margin"] = dict(l=44, r=112, t=8, b=28, autoexpand=False)
     fig.update_layout(**layout)
+    # Axe Y entièrement retiré pour les grandeurs en unité ARBITRAIRE (le fond de
+    # forme). C'est la règle déjà appliquée au Bilan : « seuls comptent les
+    # écarts et les tendances, pas les valeurs absolues, d'où l'absence de
+    # graduations ». Une graduation sur une unité qui n'en est pas une invite à
+    # comparer des nombres qui ne se comparent pas — et sans graduation, la
+    # grille horizontale ne fait plus que décorer : elle part avec.
+    #
+    # La marge gauche, elle, RESTE à 44 px : c'est ce qui aligne le bord gauche
+    # de ce graphe sur celui des trois autres de la page.
+    if not show_y:
+        fig.update_yaxes(showticklabels=False, showgrid=False)
     fr_date_axis(fig, valid[x])
     device_band(fig, valid, x)
     mark_partial_days(fig, df, x)

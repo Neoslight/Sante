@@ -122,7 +122,11 @@ DARK: dict = {
     # `grid` (#1B1B1F) sur une carte à #101012 était invisible — les graphes
     # n'avaient de fait aucune graduation, et aucune valeur intermédiaire ne
     # pouvait s'y lire.
-    "grid_line": "rgba(255,255,255,0.06)",
+    # 4,5 % et non 6 % : à deux graduations, chaque ligne pèse plus lourd, et la
+    # grille traverse la bande de zone normale (elle-même à 10 %). Deux trames
+    # d'opacité voisines qui se croisent se lisent comme un moiré, pas comme deux
+    # niveaux de lecture.
+    "grid_line": "rgba(255,255,255,0.045)",
     # Rampe séquentielle bleue : en sombre, "proche de zéro" doit se fondre
     # vers la surface SOMBRE, donc du plus foncé vers le plus clair.
     "sequential": ["#0E2440", "#16406F", "#1F5A9E", "#2E77CB", "#5B9CF6", "#8FBEF9", "#C6DDFC"],
@@ -164,7 +168,7 @@ LIGHT: dict = {
         "#6B5BD0",  # violet
         "#9A5F35",  # ocre
     ],
-    "grid_line": "rgba(0,0,0,0.06)",
+    "grid_line": "rgba(0,0,0,0.045)",
     # Même rampe que le sombre, mais l'ancre s'inverse (cf. skill dataviz,
     # "flips anchor in dark") : en clair, "proche de zéro" doit se fondre vers
     # la surface claire, donc du plus clair vers le plus foncé.
