@@ -108,22 +108,10 @@ def test_every_bevel_class_used_in_the_app_has_a_rule():
         # Préfixe d'une classe construite à l'exécution (`bevel-notice-{kind}`) :
         # les variantes réelles sont vérifiées par les tests de sémantique.
         "bevel-notice-",
-        # Idem pour les témoins de légende (`bevel-swatch-{kind}`) — leurs trois
-        # variantes réelles sont vérifiées juste en dessous.
-        "bevel-swatch-",
     }
     orphans = sorted(c for c in used if f".{c} " not in CSS and f".{c}," not in CSS
                      and f".{c}:" not in CSS and f".{c}{{" not in CSS)
     assert not orphans, f"classes sans règle CSS : {orphans}"
-
-
-def test_every_legend_swatch_kind_has_its_rule():
-    """`bevel-swatch-{kind}` est construite à l'exécution : le test de classes
-    orphelines ne peut pas la voir, et une variante ajoutée sans règle rendrait
-    un témoin de légende invisible."""
-    import charts  # noqa: PLC0415 — importé ici, comme le reste du module
-    for kind in charts.LEGEND_KINDS:
-        assert f".bevel-swatch-{kind} " in CSS or f".bevel-swatch-{kind}{{" in CSS, kind
 
 
 # --- Les jetons --------------------------------------------------------------

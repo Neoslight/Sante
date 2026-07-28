@@ -93,6 +93,21 @@ DARK: dict = {
     #
     # Quatre slots réassignés — les quatre qui touchaient au vert, à l'ambre ou
     # au rouge. Les quatre autres sont inchangés : ils ne portent aucun jugement.
+    #
+    # Le slot 7 a été réassigné DEUX fois. Sa première correction, une ardoise
+    # (#8AA0B8), échappait bien au budget de statut mais tombait dans l'autre
+    # piège : à 0,24 de saturation, elle appartenait de fait à la famille des
+    # encres — celle de la grille, des axes et du pointillé de normale. Le graphe
+    # de FC de repos paraissait désactivé à côté de ses voisins, parce que sa
+    # teinte disait « chrome » et non « donnée ». D'où le plancher de saturation
+    # vérifié par les tests du système visuel.
+    #
+    # Ocre, et non une quatrième teinte froide : les métriques de la page
+    # « Progression » occupaient 188 à 249 degrés, soit une seule famille de
+    # bleus dont l'œil ne tire aucune segmentation. Le créneau chaud est étroit —
+    # l'ambre (#E0B341) appartient au budget de fiabilité et les rouges au
+    # statut — d'où un ocre franchement moins lumineux que l'ambre et bien moins
+    # saturé que l'orange du slot 1.
     "series": [
         "#5B9CF6",  # bleu
         "#F08A4B",  # orange
@@ -101,13 +116,13 @@ DARK: dict = {
         "#D97BA8",  # rose
         "#3E8E9E",  # bleu profond  (ex-olive, famille du vert)
         "#9B8CF0",  # violet
-        "#8AA0B8",  # ardoise       (ex-rouge, famille du critique)
+        "#C4885F",  # ocre          (ex-rouge, puis ex-ardoise — cf. ci-dessous)
     ],
     # Grille horizontale : une encre à faible opacité, et non une couleur pleine.
     # `grid` (#1B1B1F) sur une carte à #101012 était invisible — les graphes
     # n'avaient de fait aucune graduation, et aucune valeur intermédiaire ne
     # pouvait s'y lire.
-    "grid_line": "rgba(255,255,255,0.08)",
+    "grid_line": "rgba(255,255,255,0.06)",
     # Rampe séquentielle bleue : en sombre, "proche de zéro" doit se fondre
     # vers la surface SOMBRE, donc du plus foncé vers le plus clair.
     "sequential": ["#0E2440", "#16406F", "#1F5A9E", "#2E77CB", "#5B9CF6", "#8FBEF9", "#C6DDFC"],
@@ -147,9 +162,9 @@ LIGHT: dict = {
         "#C25587",  # rose
         "#2E6C7A",  # bleu profond
         "#6B5BD0",  # violet
-        "#5C7080",  # ardoise
+        "#9A5F35",  # ocre
     ],
-    "grid_line": "rgba(0,0,0,0.08)",
+    "grid_line": "rgba(0,0,0,0.06)",
     # Même rampe que le sombre, mais l'ancre s'inverse (cf. skill dataviz,
     # "flips anchor in dark") : en clair, "proche de zéro" doit se fondre vers
     # la surface claire, donc du plus clair vers le plus foncé.
@@ -240,9 +255,6 @@ def inject_css() -> None:
         .bevel-chart-head         en-tête de graphe (conteneur des trois lignes)
         .bevel-chart-title        titre du graphe, quand la carte ne le nomme pas
         .bevel-chart-note         pente et réserve de fiabilité
-        .bevel-chart-legend       la légende, hors de la figure Plotly
-        .bevel-chart-key          une entrée de légende
-        .bevel-swatch             son témoin (-band / -thin / -thick)
         .bevel-group-note         légende du pointillé, au bout de l'intitulé
         .bevel-spark-line         la courbe (teinte pilotée par --bevel-spark)
         .bevel-spark-fill         l'aire sous la courbe
@@ -352,6 +364,15 @@ def css() -> str:
         [data-testid="stDataFrame"] td,
         [data-testid="stTable"] td {{
             font-variant-numeric: tabular-nums;
+        }}
+
+        /* Rythme vertical de la page : UN seul intervalle entre blocs de premier
+           niveau. Streamlit espace ses blocs selon un `gap` par défaut qui ne
+           correspond à aucun échelon du barème, et les cartes paraissaient
+           inégalement séparées sans qu'on puisse dire pourquoi. Avec le padding
+           de carte figé à 24 px, la page se met à respirer régulièrement. */
+        .stMainBlockContainer [data-testid="stVerticalBlock"] {{
+            gap: 16px;
         }}
 
         /* Carte Bevel. Streamlit 1.60 n'expose plus de `data-testid` propre aux
@@ -584,51 +605,17 @@ def css() -> str:
             gap: 4px;
             margin-bottom: 8px;
         }}
+        /* Même corps que les nuances, mais 600 contre 400 : à 500, le cran était
+           trop mince pour se lire sans comparer les deux côte à côte. */
         .bevel-chart-title {{
             color: {t['ink_primary']};
             font-size: 13px;
-            font-weight: 500;
+            font-weight: 600;
         }}
         .bevel-chart-note {{
             color: {t['ink_secondary']};
             font-size: 11px;
         }}
-        .bevel-chart-legend {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            color: {t['ink_muted']};
-            font-size: 11px;
-        }}
-        .bevel-chart-key {{
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            white-space: nowrap;
-        }}
-        /* Le témoin reprend l'ASPECT du trait qu'il désigne, pas seulement sa
-           couleur : une bande pleine, un filet fin, un trait épais. Trois
-           pastilles identiques de teintes voisines n'auraient rien distingué —
-           le quotidien et sa moyenne partagent la même couleur. */
-        .bevel-swatch {{
-            display: inline-block;
-            width: 12px;
-            flex: none;
-        }}
-        .bevel-swatch-band {{
-            height: 8px;
-            border-radius: 8px;
-        }}
-        .bevel-swatch-thin {{
-            height: 0;
-            border-top: 1px solid currentColor;
-            opacity: 0.55;
-        }}
-        .bevel-swatch-thick {{
-            height: 0;
-            border-top: 3px solid currentColor;
-        }}
-
         /* Bornes min/max de la fenêtre affichée, sous la sparkline : sans
            elles, l'échelle automatique donne la même allure à une série qui
            varie de 2 % et à une qui double. */
@@ -894,7 +881,9 @@ def css() -> str:
             gap: 12px;
             color: {t['ink_primary']};
             font-size: 32px;
-            font-weight: 600;
+            /* 700 : la seule affirmation d'état de la page. Les tuiles partagent
+               son échelon supérieur mais pas sa graisse. */
+            font-weight: 700;
             letter-spacing: -0.02em;
             line-height: 1.2;
         }}
@@ -920,9 +909,14 @@ def css() -> str:
         .bevel-verdict-headline.bevel-verdict-soft {{
             font-size: 22px;
         }}
+        /* 15 px et non 13 : le hint, les nuances et le titre de graphe interne
+           se retrouvaient tous les trois au même corps, ce qui aplatissait la
+           hiérarchie et obligeait à LIRE pour comprendre la structure. Le hint
+           remonte d'un cran — il commente le verdict, les nuances le nuancent :
+           ce ne sont pas deux niveaux, ce sont trois. */
         .bevel-verdict-hint {{
             color: {t['ink_secondary']};
-            font-size: 13px;
+            font-size: 15px;
         }}
         .bevel-nuance {{
             display: flex;

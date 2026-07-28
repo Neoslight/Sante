@@ -411,29 +411,42 @@ def test_confidence_note_drops_the_count_and_falls_silent_when_ample():
     assert "n=37" in stats.confidence_label(37)
 
 
-# --- Déplacement de niveau (séries non testables) ---------------------------
-def test_level_shift_reports_a_plain_subtraction():
-    """Pour le CTL, dont la pente n'est pas testable : « 35 → 28 » ne suppose
-    rien sur l'indépendance des mesures."""
-    df = _daily([float(35 - i * 0.25) for i in range(29)], col="ctl")
-    was, now, days = stats.level_shift(df, "ctl", df["local_date"].max(), days=28)
-    assert (was, now, days) == pytest.approx((35.0, 28.0, 28))
+# --- Sortie de zone normale -------------------------------------------------
+#: Un plateau, puis une DÉRIVE — pas un décrochage en marche d'escalier.
+#: Un décalage constant finit par entrer dans la médiane glissante et devient la
+#: nouvelle normale au bout de 28 jours : c'est le comportement voulu d'une
+#: baseline personnelle, et la fonction a raison de ne plus rien signaler. Le cas
+#: qu'elle doit attraper est celui du fond de forme réel, où la série s'éloigne
+#: plus vite que sa propre référence ne la suit.
+def _drifting(slope_per_day: float, flat: int = 40, drift: int = 12):
+    return [50.0] * flat + [50.0 + slope_per_day * i for i in range(1, drift + 1)]
 
 
-def test_level_shift_says_the_recoil_it_actually_got():
-    """Historique plus court que demandé : on prend le point le plus ancien et
-    on annonce le recul obtenu, plutôt que d'annoncer quatre semaines sur dix
-    jours — ou de ne rien dire d'un déplacement réel."""
-    df = _daily([float(30 - i) for i in range(11)], col="ctl")
-    was, now, days = stats.level_shift(df, "ctl", df["local_date"].max(), days=28)
-    assert days == 10
-    assert (was, now) == pytest.approx((30.0, 20.0))
+def test_outside_band_since_dates_a_sustained_departure():
+    """Le fait de la page « Progression » : la courbe passait sous sa zone
+    normale sur tout le dernier tiers de la fenêtre, sans que rien le dise."""
+    out = stats.outside_band_since(_daily(_drifting(-1.2)), "v")
+    assert out is not None
+    since, way = out
+    assert way == -1
+    # La date est le premier jour de la sortie EN COURS, pas la première de
+    # l'historique : c'est « depuis quand », pas « déjà arrivé une fois ».
+    assert since == pd.Timestamp("2026-02-10").date()
 
 
-def test_level_shift_gives_up_when_there_is_nothing_to_compare():
-    df = _daily([30.0], col="ctl")
-    assert stats.level_shift(df, "ctl", df["local_date"].max()) is None
-    assert stats.level_shift(df, "absente", df["local_date"].max()) is None
+def test_outside_band_since_says_nothing_when_back_inside():
+    assert stats.outside_band_since(_daily(_drifting(-1.2) + [50.0] * 3), "v") is None
+
+
+def test_outside_band_since_ignores_a_one_day_excursion():
+    """Une sortie d'un jour n'est que le bruit ordinaire d'une série contre sa
+    propre dispersion."""
+    assert stats.outside_band_since(_daily([50.0] * 40 + [20.0]), "v") is None
+
+
+def test_outside_band_since_reports_the_upper_side_too():
+    out = stats.outside_band_since(_daily(_drifting(1.2)), "v")
+    assert out is not None and out[1] == 1
 
 
 # --- Corrélations -----------------------------------------------------------

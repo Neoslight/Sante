@@ -51,6 +51,10 @@ TRACKED: list[tuple[str, str]] = [
 #: La métrique de référence : c'est elle qui donne la phrase de tête quand elle
 #: conclut. Sans arbitre, une seule métrique secondaire en hausse suffirait à
 #: annoncer « tu progresses ».
+#: Le même nom de domaine, indexé par clé — pour que les titres de graphe, les
+#: nuances du verdict et le titre de carte disent tous le même mot.
+LABELS: dict[str, str] = dict(TRACKED)
+
 PRIMARY = "VO2max"
 
 #: Métriques admises dans le VERDICT — le fond de forme en est exclu, et c'est
@@ -68,10 +72,14 @@ PRIMARY = "VO2max"
 #: inférence. C'est le test de significativité qui n'a pas lieu d'être.
 VERDICT_KEYS = ("vo2_max", "resting_hr", "hrv_rmssd")
 
-#: Hauteur UNIQUE des graphes de la page. Pleine largeur ou demi-largeur ne
-#: change pas la hauteur d'une ligne de lecture : deux hauteurs différentes dans
-#: une même colonne se lisent comme un défaut d'alignement de la grille.
-CHART_HEIGHT = 340
+#: Hauteurs des graphes : DEUX valeurs, une par largeur de colonne.
+#:
+#: Une hauteur unique de 340 px écrasait les deux graphes en demi-largeur, dont
+#: le rapport hauteur/largeur devenait presque carré là où leurs voisins pleine
+#: largeur restaient panoramiques. Ce qui doit se conserver d'un graphe à l'autre
+#: n'est pas la hauteur mais la proportion.
+CHART_HEIGHT = 300
+CHART_HEIGHT_HALF = 240
 
 # =============================================================================
 # Données : historique COMPLET d'abord, fenêtre ensuite.
@@ -159,17 +167,6 @@ if badge_text:
         unsafe_allow_html=True,
     )
 
-# =============================================================================
-# Verdict de progression : UNE affirmation, ses nuances en dessous.
-#
-# Calque de la carte « Forme » du Bilan, et pour la même raison : quatre graphes
-# empilés laissaient le lecteur composer lui-même la réponse à la question posée
-# en titre, alors que le sens d'une pente n'est pas lisible sans le registre (une
-# FC de repos qui baisse est une bonne nouvelle) ni sans son n.
-# =============================================================================
-t = theme.active_tokens()
-
-
 def _source(key: str) -> pd.DataFrame:
     """Le CTL vient du modèle, les trois autres de mart.daily filtré.
 
@@ -179,6 +176,61 @@ def _source(key: str) -> pd.DataFrame:
     if key != "ctl":
         return measured
     return ctl_window.loc[pd.to_datetime(ctl_window["local_date"]).dt.date <= as_of]
+
+
+# Références de départ calculées AVANT la carte, pour toutes les tuiles à la
+# fois : la carte doit pouvoir dire en une ligne que le recul est plus court que
+# l'horizon demandé. « 6 mois » en haut de page et « vs il y a 4 semaines » sous
+# chaque pastille est exact des deux côtés (`long_term_reference` rabat sur le
+# recul réellement disponible) et illisible ensemble — l'écart ne s'explique
+# nulle part à l'écran.
+#
+# Recul compté depuis `as_of` et non depuis `end` : la fin de l'horizon peut
+# tomber sur une journée écartée, et le recul annoncé serait alors d'un jour de
+# plus que celui réellement parcouru.
+requested_lag = (pd.Timestamp(as_of) - pd.Timestamp(start)).days
+# Référence de DÉPART : médiane d'une quinzaine centrée sur le début de
+# l'horizon, et non la valeur isolée de ce jour-là — comparer deux points uniques
+# d'une série bruitée fabrique une tendance à partir de deux accidents.
+references: dict[str, tuple[float | None, int]] = {
+    key: stats.long_term_reference(
+        _source(key), key, as_of, lag_days=requested_lag, half_window=7, min_lag_days=28,
+    )
+    for key, _label in TRACKED
+}
+#: Série LISSÉE et valeur affichée, par métrique — calculées ici et non dans le
+#: rendu des tuiles, parce que la carte « Progression » en a besoin AUSSI pour
+#: son constat de fond de forme. Deux calculs pour la même phrase française
+#: donnaient deux nombres : le constat disait « 35,0 → 28,5 » quand la tuile
+#: affichait 28,8 et une variation de -6,4. Une seule référence par métrique et
+#: par page, comme `compute.baseline_and_z` l'a imposé sur le Bilan.
+SMOOTHED: dict[str, pd.Series] = {}
+VALUES: dict[str, float | None] = {}
+for _key, _label in TRACKED:
+    _src = _source(_key)
+    _raw = (_src.set_index(pd.to_datetime(_src["local_date"]))[_key]
+            if _key in _src.columns and "local_date" in _src.columns
+            else pd.Series(dtype=float))
+    _w = metric(_key).ma_window
+    _s = (_raw.rolling(f"{_w}D", min_periods=max(2, _w // 3)).mean()
+          if not _raw.empty else _raw)
+    SMOOTHED[_key] = _s
+    _v = _s.dropna()
+    VALUES[_key] = float(_v.iloc[-1]) if not _v.empty else None
+
+# Le plus long recul réellement obtenu : c'est celui que les pastilles affichent.
+achieved_lag = max((lag for prev, lag in references.values() if prev is not None),
+                   default=0)
+
+# =============================================================================
+# Verdict de progression : UNE affirmation, ses nuances en dessous.
+#
+# Calque de la carte « Forme » du Bilan, et pour la même raison : quatre graphes
+# empilés laissaient le lecteur composer lui-même la réponse à la question posée
+# en titre, alors que le sens d'une pente n'est pas lisible sans le registre (une
+# FC de repos qui baisse est une bonne nouvelle) ni sans son n.
+# =============================================================================
+t = theme.active_tokens()
 
 
 trends = {
@@ -261,10 +313,17 @@ with ui.card("Progression", info={
     # une soustraction, vraie quelle que soit l'autocorrélation de la série.
     aside_html = ""
     ctl_src = _source("ctl")
-    shift = stats.level_shift(ctl_src, "ctl", as_of, days=28)
-    if shift is not None:
-        was, now, real_days = shift
-        m_ctl = metric("ctl")
+    m_ctl = metric("ctl")
+    # LA MÊME référence que la tuile « Fond », au chiffre près.
+    #
+    # Le constat calculait son propre départ (valeur brute d'il y a 28 jours) et
+    # la tuile le sien (médiane centrée de `long_term_reference`) : deux nombres
+    # sous la même phrase française « sur 4 semaines », 28,5 ici et 28,8 là,
+    # -6,5 contre -6,4. C'est la faute que `compute.baseline_and_z` a déjà
+    # supprimée sur le Bilan — une seule référence par métrique et par page.
+    was, real_days = references["ctl"]
+    now = VALUES["ctl"]
+    if was is not None and now is not None:
         span = (f"{round(real_days / 7)} dernières semaines" if real_days >= 10
                 else f"{real_days} derniers jours")
         # Teinte d'IDENTITÉ du fond de forme, pas une couleur de statut : elle
@@ -272,7 +331,7 @@ with ui.card("Progression", info={
         # de statut de la page reste entier.
         ctl_hue = t["series"][m_ctl.palette_index % len(t["series"])]
         spark = charts.micro_sparkline(
-            ctl_src["ctl"].tail(real_days + 1), ctl_hue, width=60, height=16,
+            SMOOTHED["ctl"].tail(real_days + 1), ctl_hue, width=60, height=16,
         )
         aside_html = (
             f'<div class="bevel-verdict-aside">'
@@ -320,110 +379,6 @@ with ui.card("Progression", info={
         )
 
 # =============================================================================
-# VO2max : la métrique de référence, seule dans sa carte
-# =============================================================================
-with ui.card("VO2max — la mesure de référence", info=metric("vo2_max").how_read):
-    if "vo2_max" not in measured.columns or measured["vo2_max"].dropna().empty:
-        ui.empty_state(
-            "Pas d'estimation de VO2max sur cette fenêtre",
-            hint="Fitbit ne l'estime qu'après des séances de course avec GPS.",
-        )
-    else:
-        # `title=""` : la carte porte déjà « VO2max ». Le titre interne le
-        # répétait et occupait la ligne où la note de tendance doit tenir.
-        charts.metric_block(measured, metric("vo2_max"), title="", show_trend=True,
-                            show_confidence=True, height=CHART_HEIGHT)
-
-# =============================================================================
-# Les deux signaux courts, côte à côte : ils racontent la même histoire que la
-# VO2max à une échelle de temps où elle ne bouge pas encore.
-# =============================================================================
-with ui.card("FC de repos & variabilité cardiaque", info={
-    metric("resting_hr").short: f"{metric('resting_hr').what} {metric('resting_hr').how_read}",
-    metric("hrv_rmssd").short: f"{metric('hrv_rmssd').what} {metric('hrv_rmssd').how_read}",
-    "Pourquoi les deux ensemble": "Elles bougent en miroir : une FC de repos qui descend "
-                                  "pendant que la variabilité monte est la signature d'une "
-                                  "condition qui s'améliore. Quand elles divergent, c'est "
-                                  "généralement le signe d'autre chose que l'entraînement "
-                                  "(sommeil, alcool, maladie).",
-}):
-    # Ici les titres internes RESTENT : la carte nomme les deux métriques d'un
-    # seul tenant, rien ne dirait laquelle est à gauche. La note de tendance passe
-    # alors en sous-titre du bloc, sous le titre et non par-dessus.
-    # Hauteur explicite, et la MÊME que les graphes pleine largeur de la page :
-    # laissée au défaut (320), elle donnait 340 sur la VO2max et le fond de forme
-    # et 320 ici, soit deux hauteurs de graphe dans une même colonne de lecture.
-    c1, c2 = st.columns(2)
-    with c1:
-        charts.metric_block(measured, metric("resting_hr"), show_trend=True,
-                            show_confidence=True, height=CHART_HEIGHT)
-    with c2:
-        charts.metric_block(measured, metric("hrv_rmssd"), show_trend=True,
-                            show_confidence=True, height=CHART_HEIGHT)
-
-# =============================================================================
-# Fond de forme : la capacité réellement construite
-#
-# C'est ce qui manquait le plus à la v1 : la page parlait de progression sans
-# jamais montrer la grandeur que l'entraînement construit. Le verdict du jour
-# (page Bilan) en montre la DIFFÉRENCE avec la fatigue ; ici, c'est le niveau
-# lui-même, sur des mois.
-# =============================================================================
-with ui.card("Fond de forme (CTL)", info={
-    "Ce que c'est": metric("ctl").how_read,
-    "Ce que ce n'est pas": "Ni un score de performance, ni une note. C'est la charge "
-                           "cardio absorbée en moyenne sur six semaines, en unité "
-                           "arbitraire : seuls comptent le SENS et l'ampleur relative "
-                           "du déplacement, pas la valeur absolue.",
-    "Maturité du modèle": "La moyenne se calcule sur 42 jours. Tant que l'historique est "
-                          "plus court, la courbe monte mécaniquement depuis zéro — c'est "
-                          "l'amorçage du modèle, pas une progression. La portion grisée "
-                          "au début du graphe est exactement cette zone : ce qui s'y "
-                          "trouve n'est pas encore une mesure de ta capacité.",
-}):
-    # La zone d'amorçage se DESSINE, elle ne se raconte pas.
-    #
-    # C'est une propriété d'une portion de courbe : dite en légende sous le
-    # graphe (« les 42 premiers jours »), elle demandait au lecteur de la
-    # reporter lui-même sur l'axe des dates — travail que personne ne fait.
-    warmup_until = (pd.to_datetime(ctl_full["local_date"]).min()
-                    + pd.Timedelta(days=stats.CTL_DAYS))
-    if ctl_window.empty:
-        ui.empty_state(
-            "Le modèle de forme n'atteint pas cette fenêtre",
-            hint="Il lui faut de la charge cardio quotidienne sur plusieurs semaines.",
-        )
-    else:
-        # NI `show_trend` NI `show_confidence` : l'annotation de tendance affiche
-        # une pente et sa p-value, qui ne veulent rien dire sur une moyenne
-        # exponentielle (cf. `VERDICT_KEYS`). Sur cette courbe, c'est le niveau
-        # et le sens du déplacement qui se lisent, pas un test.
-        charts.metric_block(ctl_window, metric("ctl"), title="",
-                            height=CHART_HEIGHT, warmup_until=warmup_until,
-                            warmup_label="amorçage du modèle")
-        maturity = float(ctl_full["ctl_maturity"].iloc[-1]) if "ctl_maturity" in ctl_full else 1.0
-        if maturity < 1.0:
-            # DEUX chiffres, et pas un seul unifié : ce n'est pas la même
-            # profondeur qui compte des deux côtés.
-            #
-            # La maturité du modèle se mesure en jours de CALENDRIER — la
-            # moyenne exponentielle tourne à cadence quotidienne et
-            # `impute_partial_load` bouche les trous, donc une journée mal
-            # couverte compte quand même pour un jour d'amorçage. Les régressions
-            # de cette page, elles, ne portent que sur les jours MESURÉS. Écrire
-            # « 39 » là où le verdict annonce « n=37 » et le pied « 37 jours
-            # mesurés » se lit comme une incohérence ; écrire « 37 » partout
-            # serait faux sur l'amorçage. Le seul énoncé juste les nomme tous
-            # les deux.
-            st.caption(
-                f"Modèle mûr à {maturity:.0%} : la moyenne de fond porte sur "
-                f"{stats.CTL_DAYS} jours, l'historique n'en compte que "
-                f"{len(full_daily)} de calendrier, dont "
-                f"{quality.count_measured(full_daily)} mesurés. "
-                "Le début de la courbe reste l'amorçage du modèle."
-            )
-
-# =============================================================================
 # Repères chiffrés : où en est chaque métrique, et de combien elle a bougé
 # DEPUIS LE DÉBUT DE L'HORIZON.
 #
@@ -432,29 +387,6 @@ with ui.card("Fond de forme (CTL)", info={
 # au niveau du début de fenêtre (« d'où je viens ? »). Deux questions, deux
 # références — et le libellé de chaque pastille dit laquelle.
 # =============================================================================
-# Références de départ calculées AVANT la carte, pour toutes les tuiles à la
-# fois : la carte doit pouvoir dire en une ligne que le recul est plus court que
-# l'horizon demandé. « 6 mois » en haut de page et « vs il y a 4 semaines » sous
-# chaque pastille est exact des deux côtés (`long_term_reference` rabat sur le
-# recul réellement disponible) et illisible ensemble — l'écart ne s'explique
-# nulle part à l'écran.
-#
-# Recul compté depuis `as_of` et non depuis `end` : la fin de l'horizon peut
-# tomber sur une journée écartée, et le recul annoncé serait alors d'un jour de
-# plus que celui réellement parcouru.
-requested_lag = (pd.Timestamp(as_of) - pd.Timestamp(start)).days
-# Référence de DÉPART : médiane d'une quinzaine centrée sur le début de
-# l'horizon, et non la valeur isolée de ce jour-là — comparer deux points uniques
-# d'une série bruitée fabrique une tendance à partir de deux accidents.
-references: dict[str, tuple[float | None, int]] = {
-    key: stats.long_term_reference(
-        _source(key), key, as_of, lag_days=requested_lag, half_window=7, min_lag_days=28,
-    )
-    for key, _label in TRACKED
-}
-# Le plus long recul réellement obtenu : c'est celui que les pastilles affichent.
-achieved_lag = max((lag for prev, lag in references.values() if prev is not None),
-                   default=0)
 
 
 def _render_kpi(key: str) -> None:
@@ -473,13 +405,7 @@ def _render_kpi(key: str) -> None:
     # Même fenêtre que la courbe du graphe (`metric.ma_window`), pour que la
     # tuile et le trait épais disent le même nombre. Et même série pour la
     # sparkline, sinon son point terminal ne serait pas la valeur affichée.
-    raw_series = src.set_index(pd.to_datetime(src["local_date"]))[key] \
-        if key in src.columns and "local_date" in src.columns else pd.Series(dtype=float)
-    series = raw_series.rolling(f"{m.ma_window}D",
-                                min_periods=max(2, m.ma_window // 3)).mean() \
-        if not raw_series.empty else raw_series
-    valid = series.dropna()
-    value = float(valid.iloc[-1]) if not valid.empty else None
+    series, value = SMOOTHED[key], VALUES[key]
 
     prev_value, real_lag = references[key]
     delta_label = f"vs il y a {real_lag // 30} mois" if prev_value is not None else ""
@@ -565,6 +491,114 @@ with ui.card("Repères", info={
         unsafe_allow_html=True,
     )
     ui.kpi_row([key for key, _ in TRACKED], _render_kpi, per_row=4)
+
+# =============================================================================
+# VO2max : la métrique de référence, seule dans sa carte
+# =============================================================================
+with ui.card("VO2max — la mesure de référence", info={
+    "Ce que c'est": metric("vo2_max").how_read,
+    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+}):
+    if "vo2_max" not in measured.columns or measured["vo2_max"].dropna().empty:
+        ui.empty_state(
+            "Pas d'estimation de VO2max sur cette fenêtre",
+            hint="Fitbit ne l'estime qu'après des séances de course avec GPS.",
+        )
+    else:
+        # `title=""` : la carte porte déjà « VO2max ». Le titre interne le
+        # répétait et occupait la ligne où la note de tendance doit tenir.
+        charts.metric_block(measured, metric("vo2_max"), title="", show_trend=True,
+                            show_confidence=True, height=CHART_HEIGHT)
+
+# =============================================================================
+# Les deux signaux courts, côte à côte : ils racontent la même histoire que la
+# VO2max à une échelle de temps où elle ne bouge pas encore.
+# =============================================================================
+with ui.card("FC de repos & variabilité cardiaque", info={
+    metric("resting_hr").short: f"{metric('resting_hr').what} {metric('resting_hr').how_read}",
+    metric("hrv_rmssd").short: f"{metric('hrv_rmssd').what} {metric('hrv_rmssd').how_read}",
+    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+    "Pourquoi les deux ensemble": "Elles bougent en miroir : une FC de repos qui descend "
+                                  "pendant que la variabilité monte est la signature d'une "
+                                  "condition qui s'améliore. Quand elles divergent, c'est "
+                                  "généralement le signe d'autre chose que l'entraînement "
+                                  "(sommeil, alcool, maladie).",
+}):
+    # Les titres internes RESTENT — la carte nomme les deux métriques d'un seul
+    # tenant, rien ne dirait laquelle est à gauche — mais ils prennent les noms
+    # de DOMAINE de `TRACKED`, ceux du titre de carte et des nuances du verdict.
+    #
+    # Le registre dit « Fréquence cardiaque au repos » et « Variabilité cardiaque
+    # (HRV) » : trois noms pour deux métriques tenaient dans deux centimètres de
+    # hauteur. Un nom, un objet.
+    # Hauteur explicite, et la MÊME que les graphes pleine largeur de la page :
+    # laissée au défaut (320), elle donnait 340 sur la VO2max et le fond de forme
+    # et 320 ici, soit deux hauteurs de graphe dans une même colonne de lecture.
+    c1, c2 = st.columns(2)
+    with c1:
+        charts.metric_block(measured, metric("resting_hr"), title=LABELS["resting_hr"],
+                            show_trend=True, show_confidence=True,
+                            height=CHART_HEIGHT_HALF)
+    with c2:
+        charts.metric_block(measured, metric("hrv_rmssd"), title=LABELS["hrv_rmssd"],
+                            show_trend=True, show_confidence=True,
+                            height=CHART_HEIGHT_HALF)
+
+# =============================================================================
+# Fond de forme : la capacité réellement construite
+#
+# C'est ce qui manquait le plus à la v1 : la page parlait de progression sans
+# jamais montrer la grandeur que l'entraînement construit. Le verdict du jour
+# (page Bilan) en montre la DIFFÉRENCE avec la fatigue ; ici, c'est le niveau
+# lui-même, sur des mois.
+# =============================================================================
+with ui.card("Fond de forme (CTL)", info={
+    "Ce que c'est": metric("ctl").how_read,
+    "Ce que ce n'est pas": "Ni un score de performance, ni une note. C'est la charge "
+                           "cardio absorbée en moyenne sur six semaines, en unité "
+                           "arbitraire : seuls comptent le SENS et l'ampleur relative "
+                           "du déplacement, pas la valeur absolue.",
+    "Lire le graphe": "Trois traces : le trait fin est la mesure quotidienne, le trait épais sa moyenne glissante — dont la valeur est écrite à son extrémité — et la bande teintée ta zone normale sur 28 jours, médiane glissante à plus ou moins un écart-type robuste. La ligne pointillée au milieu de la bande est cette médiane.",
+    "Maturité du modèle": "La moyenne se calcule sur 42 jours. Tant que l'historique est "
+                          "plus court, la courbe monte mécaniquement depuis zéro — c'est "
+                          "l'amorçage du modèle, pas une progression. La portion grisée "
+                          "au début du graphe est exactement cette zone : ce qui s'y "
+                          "trouve n'est pas encore une mesure de ta capacité.",
+}):
+    # La zone d'amorçage se DESSINE, elle ne se raconte pas.
+    #
+    # C'est une propriété d'une portion de courbe : dite en légende sous le
+    # graphe (« les 42 premiers jours »), elle demandait au lecteur de la
+    # reporter lui-même sur l'axe des dates — travail que personne ne fait.
+    warmup_until = (pd.to_datetime(ctl_full["local_date"]).min()
+                    + pd.Timedelta(days=stats.CTL_DAYS))
+    if ctl_window.empty:
+        ui.empty_state(
+            "Le modèle de forme n'atteint pas cette fenêtre",
+            hint="Il lui faut de la charge cardio quotidienne sur plusieurs semaines.",
+        )
+    else:
+        # NI `show_trend` NI `show_confidence` : l'annotation de tendance affiche
+        # une pente et sa p-value, qui ne veulent rien dire sur une moyenne
+        # exponentielle (cf. `VERDICT_KEYS`). Sur cette courbe, c'est le niveau
+        # et le sens du déplacement qui se lisent, pas un test.
+        charts.metric_block(ctl_window, metric("ctl"), title="",
+                            height=CHART_HEIGHT, warmup_until=warmup_until,
+                            warmup_label="amorçage du modèle")
+        # LE FAIT de la page, à la place de la mention technique.
+        #
+        # La courbe passe sous sa zone normale sur tout le dernier tiers de la
+        # fenêtre et rien ne le disait ; la légende parlait à la place de maturité
+        # du modèle — une propriété du CALCUL, désormais dessinée sur le graphe
+        # (zone d'amorçage grisée, avec son filet). Le texte est libre pour ce que
+        # le dessin ne dit pas : depuis quand.
+        out = stats.outside_band_since(ctl_src, "ctl")
+        if out is not None:
+            since, way = out
+            st.caption(
+                f"{'Sous' if way < 0 else 'Au-dessus de'} ta zone normale depuis le "
+                f"{common.format_fr_date(since, weekday=False, year=False)}."
+            )
 
 ui.dismissed_summary()
 

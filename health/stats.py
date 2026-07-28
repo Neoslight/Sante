@@ -781,47 +781,56 @@ def lagged_correlation(
 # --------------------------------------------------------------------------
 # Fiabilité affichable
 # --------------------------------------------------------------------------
-def level_shift(
-    df: pd.DataFrame, col: str, as_of, days: int = 28, date_col: str = "local_date",
-) -> tuple[float, float, int] | None:
-    """Déplacement BRUT d'une série entre deux dates : (départ, arrivée, recul réel).
+def outside_band_since(
+    df: pd.DataFrame, col: str, date_col: str = "local_date", min_days: int = 5,
+) -> tuple[dt.date, int] | None:
+    """Depuis quand la série est-elle SORTIE de sa zone normale, et par où ?
 
-    Existe pour les séries dont la pente n'est pas testable — au premier chef le
-    CTL, moyenne exponentielle sur 42 jours dont deux valeurs voisines partagent
-    41 jours de données (cf. la note « Pourquoi pas le fond de forme » de la page
-    Progression). Leur interdire la régression était juste ; les faire disparaître
-    du discours ne l'était pas. « 35,1 → 28,2 » n'est pas une inférence, c'est une
-    soustraction : elle ne suppose rien sur l'indépendance des mesures, et elle
-    reste vraie quelle que soit l'autocorrélation de la série.
+    Renvoie `(date de sortie, sens)` — sens -1 sous la bande, +1 au-dessus — ou
+    `None` si la dernière valeur est dans sa zone, ou si la sortie est trop
+    récente pour valoir d'être dite.
 
-    `days` est un souhait : si l'historique s'arrête avant, le recul RÉELLEMENT
-    utilisé est renvoyé, pour que l'appelant l'écrive plutôt que d'annoncer
-    quatre semaines sur deux semaines de données. Renvoie None s'il n'y a pas de
-    quoi comparer deux dates distinctes.
+    Existe pour un cas précis : sur le fond de forme, la courbe passait sous sa
+    zone normale sur tout le dernier tiers de la fenêtre, et c'était LE fait de
+    la page — mais rien ne l'énonçait. Sortir d'une bande ± 1 sigma n'est pas une
+    inférence : c'est une comparaison entre deux séries tracées l'une sur
+    l'autre, que le lecteur fait déjà des yeux. La nommer ne fait que lui
+    épargner de compter les jours à rebours sur l'axe.
+
+    `min_days` écarte les sorties d'un ou deux jours, qui ne sont que le bruit
+    ordinaire d'une série contre sa propre dispersion.
+
+    Note sur ce que cette fonction NE détecte pas : un décalage constant finit
+    par entrer dans la médiane glissante et devient la nouvelle normale au bout
+    de 28 jours. C'est le comportement voulu d'une baseline personnelle — le cas
+    qu'on veut attraper est celui d'une série qui s'éloigne PLUS VITE que sa
+    propre référence ne la suit.
     """
-    if df is None or df.empty or col not in df.columns or date_col not in df.columns:
+    if df is None or df.empty or col not in df.columns:
         return None
-    d = df[[date_col, col]].dropna()
+    base = rolling_baseline(df, col, date_col=date_col)
+    d = base.dropna(subset=["baseline", "lower", "upper"])
     if d.empty:
         return None
-    dates = pd.to_datetime(d[date_col]).dt.date
-    as_of = pd.Timestamp(as_of).date()
 
-    upto = d.loc[dates <= as_of]
-    if upto.empty:
+    last = d.iloc[-1]
+    if last["value"] < last["lower"]:
+        direction, bound = -1, "lower"
+    elif last["value"] > last["upper"]:
+        direction, bound = 1, "upper"
+    else:
         return None
-    end_date = pd.to_datetime(upto[date_col]).dt.date.max()
-    end_value = float(upto.loc[pd.to_datetime(upto[date_col]).dt.date == end_date, col].iloc[-1])
 
-    target = end_date - dt.timedelta(days=days)
-    earlier = upto.loc[pd.to_datetime(upto[date_col]).dt.date <= target]
-    # Pas assez de recul : on prend le point le plus ancien disponible et on dit
-    # le recul obtenu. Renvoyer None cacherait un déplacement réel.
-    start_row = earlier.iloc[-1] if not earlier.empty else upto.iloc[0]
-    start_date = pd.Timestamp(start_row[date_col]).date()
-    if start_date == end_date:
+    # Remonter tant que la série reste du même côté : la date de sortie est le
+    # premier jour de la série ININTERROMPUE en cours, pas la première sortie
+    # de l'historique.
+    out = (d["value"] < d[bound]) if direction < 0 else (d["value"] > d[bound])
+    start = len(d) - 1
+    while start > 0 and bool(out.iloc[start - 1]):
+        start -= 1
+    if len(d) - start < min_days:
         return None
-    return float(start_row[col]), end_value, (end_date - start_date).days
+    return pd.Timestamp(d[date_col].iloc[start]).date(), direction
 
 
 #: Réserves de fiabilité par palier d'effectif : (seuil, forme courte, forme

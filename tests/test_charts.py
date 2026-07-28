@@ -357,6 +357,24 @@ def test_series_palette_never_borrows_a_status_colour():
         assert not overlap, f"teintes de statut dans la palette de séries : {overlap}"
 
 
+def test_no_series_hue_falls_back_into_the_ink_family():
+    """L'autre piège du budget couleur, symétrique du premier.
+
+    Éviter les teintes de statut ne suffit pas : une teinte trop désaturée
+    rejoint la famille des encres — celle de la grille, des axes et du pointillé
+    de normale — et sa courbe se lit comme du chrome. C'était le cas de l'ardoise
+    (#8AA0B8, saturation 0,24) : le graphe de FC de repos paraissait désactivé à
+    côté de ses voisins.
+    """
+    import colorsys  # noqa: PLC0415
+    for tokens in (theme.DARK, theme.LIGHT):
+        for hexa in tokens["series"]:
+            h = hexa.lstrip("#")
+            r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+            _, _, sat = colorsys.rgb_to_hls(r, g, b)
+            assert sat >= 0.35, f"{hexa} (saturation {sat:.2f}) appartient aux encres"
+
+
 def test_series_palette_has_the_same_length_as_categorical():
     """`palette_index` du registre indexe les deux : un jeu plus court
     recyclerait silencieusement les teintes."""
@@ -373,7 +391,81 @@ def test_metric_chart_tints_the_baseline_band_with_the_metric_colour():
                       "test_metric": [50.0 + i % 4 for i in range(30)]}), m)
     band = next(tr for tr in fig.data if tr.fill == "toself")
     hue = theme.active_tokens()["series"][0]
-    assert band.fillcolor == charts._with_opacity(hue, 0.08)
+    assert band.fillcolor == charts._with_opacity(hue, 0.10)
+
+
+# --- anatomie commune : poids visuel et étiquette de fin de ligne --------
+def _frame(n=40, pattern=lambda i: 50.0 + (i % 5)):
+    return pd.DataFrame({"local_date": pd.date_range("2026-01-01", periods=n),
+                         "test_metric": [pattern(i) for i in range(n)]})
+
+
+def test_visual_weight_puts_the_measurement_above_its_reference():
+    """L'ordre était inversé : la bande de référence était l'objet le plus lourd
+    du graphe et la mesure quotidienne le plus léger. Le décor dominait la
+    donnée."""
+    fig = charts.metric_chart(_frame(), _metric(baseline="personal", palette_index=0))
+    hue = theme.active_tokens()["series"][0]
+    band = next(tr for tr in fig.data if tr.fill == "toself")
+    daily = next(tr for tr in fig.data if tr.name == "Quotidien")
+    smooth = next(tr for tr in fig.data if str(tr.name).startswith("Moyenne"))
+
+    assert band.fillcolor == charts._with_opacity(hue, 0.10)
+    assert daily.line.color == charts._with_opacity(hue, 0.35)
+    assert smooth.line.color == hue, "la moyenne est la seule trace en teinte pleine"
+    assert smooth.line.width > daily.line.width
+    assert smooth.line.shape == "spline"
+
+
+def test_the_smoothed_curve_carries_its_value_at_the_end():
+    """Ce que la légende ne donnait pas : la valeur. Écrite au bout de la
+    courbe, elle réconcilie d'un coup d'œil le graphe et sa tuile."""
+    fig = charts.metric_chart(_frame(pattern=lambda i: 50.0), _metric(fmt="{:.0f}"))
+    assert [a.text for a in fig.layout.annotations] == ["Moyenne 7j · 50"]
+    dot = fig.data[-1]
+    assert dot.mode == "markers" and dot.marker.size == 4
+
+
+def test_the_dotted_baseline_never_outshines_the_measurement():
+    """Un repère plus visible que la mesure qu'il situe inverse le sens du
+    graphe."""
+    fig = charts.metric_chart(_frame(), _metric(baseline="personal"))
+    dotted = next(tr for tr in fig.data
+                  if tr.line.dash == "dot" and tr.showlegend is False)
+    assert dotted.line.width == 1
+    assert "rgba" in dotted.line.color, "encre effacée, pas une couleur pleine"
+
+
+def test_the_last_day_is_always_a_tick():
+    """La dernière graduation s'arrêtait au 17 quand les données allaient au 24 :
+    l'œil terminait sa lecture sur une date fausse."""
+    for n in (10, 28, 37, 180):
+        dates = pd.date_range("2026-01-01", periods=n)
+        fig = charts.fr_date_axis(go.Figure(), dates)
+        assert fig.layout.xaxis.tickvals[-1] == dates[-1], n
+        assert fig.layout.xaxis.tickvals[0] == dates[0], n
+
+
+def test_the_last_tick_is_the_most_contrasted():
+    fig = charts.fr_date_axis(go.Figure(), pd.date_range("2026-01-01", periods=37))
+    labels = list(fig.layout.xaxis.ticktext)
+    assert theme.active_tokens()["ink_secondary"] in labels[-1]
+    assert all("<span" not in x for x in labels[:-1])
+
+
+def test_side_by_side_charts_share_the_same_plotting_geometry():
+    """Deux graphes voisins dont les valeurs n'ont pas le même nombre de chiffres
+    obtenaient deux largeurs utiles différentes : leurs axes X ne se
+    correspondaient plus, et « l'un monte pendant que l'autre descend » devenait
+    illisible."""
+    left = charts.metric_chart(_frame(pattern=lambda i: 60.0 + i % 5),
+                               _metric(fmt="{:.0f}"), height=240)
+    right = charts.metric_chart(_frame(pattern=lambda i: 4000.0 + i % 5),
+                                _metric(fmt="{:.0f}"), height=240)
+    assert left.layout.margin == right.layout.margin
+    assert left.layout.margin.autoexpand is False, (
+        "sinon Plotly élargit la marge pour loger ses graduations"
+    )
 
 
 # --- axe X : plafond de graduations, jamais incliné ----------------------
@@ -396,7 +488,9 @@ def test_horizontal_grid_is_visible_ink_and_bounded():
     layout = charts.base_layout(y_title="u")
     assert layout["yaxis"]["showgrid"] is True
     assert layout["yaxis"]["gridcolor"] == theme.active_tokens()["grid_line"]
-    assert layout["yaxis"]["nticks"] == 5
+    # Trois graduations : la valeur exacte se lit au bout de la courbe, l'axe ne
+    # donne plus que l'ordre de grandeur.
+    assert layout["yaxis"]["nticks"] == 3
 
 
 # --- zone d'amorçage -----------------------------------------------------
@@ -409,8 +503,13 @@ def test_metric_chart_shades_the_warmup_window():
     plain = charts.metric_chart(df, m)
     shaded = charts.metric_chart(df, m, warmup_until=pd.Timestamp("2026-02-11"),
                                  warmup_label="amorçage")
-    assert len(shaded.layout.shapes) == len(plain.layout.shapes) + 1
-    assert "amorçage" in [a.text for a in shaded.layout.annotations]
+    # DEUX formes : le fond grisé, et le filet vertical qui dit où il s'arrête.
+    # À 10 % d'opacité, le seul changement de fond ne montrait pas la frontière.
+    assert len(shaded.layout.shapes) == len(plain.layout.shapes) + 2
+    note = next(a for a in shaded.layout.annotations if a.text == "amorçage")
+    # À mi-hauteur DANS la zone : posée sur le bord supérieur, elle se lisait
+    # comme le titre du graphe.
+    assert (note.y, note.yref) == (0.5, "paper")
 
 
 def test_warmup_shading_is_skipped_when_the_window_is_already_past():
@@ -466,10 +565,15 @@ def test_metric_chart_carries_no_chrome_at_all():
         _hr_frame([60.0 + i * 0.1 for i in range(40)]), metrics.require("resting_hr"),
         show_trend=True, show_confidence=True,
     )
-    assert fig.layout.annotations == ()
     assert fig.layout.title.text is None
     assert fig.layout.showlegend is False
     assert fig.layout.margin.t == 8, "la figure récupère toute sa boîte"
+    # Pas de titre d'axe rotatif : le pire rapport lisibilité/place d'une page.
+    assert fig.layout.yaxis.title.text is None
+    # La SEULE annotation restante est l'étiquette de fin de courbe, qui porte
+    # la valeur — ce que la légende ne donnait justement pas.
+    assert [a.text for a in fig.layout.annotations] == ["Moyenne 7j · 64"]
+    assert fig.layout.margin.r > 100, "la marge droite loge cette étiquette"
 
 
 def test_chart_header_carries_the_chrome_instead():
@@ -484,8 +588,8 @@ def test_chart_header_carries_the_chrome_instead():
     assert "hausse" in head
     # Aucun appareil statistique en surface : ni effectif, ni p-value.
     assert "n=" not in head and "p=" not in head
-    for label in ("Zone normale (28j)", "Quotidien", "Moyenne 7j"):
-        assert label in head
+    # Et AUCUNE légende : elle est au bout des courbes, avec la valeur en prime.
+    assert "bevel-chart-legend" not in head
 
 
 def test_chart_header_omits_the_title_the_card_already_carries():
@@ -495,20 +599,7 @@ def test_chart_header_omits_the_title_the_card_already_carries():
     )
     head = charts.chart_header_html(dict(fig.layout.meta))
     assert "bevel-chart-title" not in head
-    assert "bevel-chart-legend" in head, "la légende, elle, reste due"
-
-
-def test_chart_header_legend_matches_the_traces_actually_drawn():
-    """La légende voyage dans `layout.meta` plutôt que d'être reconstituée par
-    l'appelant : la bande de baseline est conditionnelle, et une légende écrite
-    à côté finirait par décrire un graphe qui n'est plus celui-là."""
-    df = _hr_frame([60.0 + i * 0.1 for i in range(40)])
-    m = metrics.require("resting_hr")
-    with_band = dict(charts.metric_chart(df, m).layout.meta)["keys"]
-    without = dict(charts.metric_chart(df, m, show_baseline=False).layout.meta)["keys"]
-    assert [k[0] for k in with_band][0] == "Zone normale (28j)"
-    assert "Zone normale (28j)" not in [k[0] for k in without]
-    assert len(without) == len(with_band) - 1
+    assert "bevel-chart-note" in head, "la note de tendance, elle, reste due"
 
 
 # --- graphe vide --------------------------------------------------------
@@ -706,14 +797,15 @@ def test_kpi_tile_carries_no_status_glyph(monkeypatch):
     assert not any(g in html for g in charts.STATUS_GLYPHS.values())
 
 
-def test_kpi_scale_writes_the_unit_once_on_the_upper_bound_only(monkeypatch):
-    """Deux unités par tuile faisaient seize répétitions de « kcal » et de
-    « ml/kg/min » sur la grille pour dire ce que le libellé disait déjà."""
+def test_the_unit_appears_exactly_once_per_tile(monkeypatch):
+    """Elle était sur la valeur principale ET sur la borne haute : deux fois par
+    tuile, seize fois sur une grille de huit. Elle reste sur la valeur — la
+    borne min/max est une annotation d'échelle, pas une grandeur à qualifier."""
     m = _metric(unit=" ml/kg/min", fmt="{:.1f}")
-    scale = _render_kpi_html(monkeypatch, m, 2.0, prev=1.0).split('class="bevel-kpi-scale"')[1]
-    lower, upper = scale.split("<span>")[1:3]
-    assert "ml/kg/min" not in lower
-    assert "ml/kg/min" in upper
+    html_str = _render_kpi_html(monkeypatch, m, 2.0, prev=1.0)
+    assert html_str.count("ml/kg/min") == 1
+    scale = html_str.split('class="bevel-kpi-scale"')[1]
+    assert "ml/kg/min" not in scale
 
 
 def test_no_tile_carries_a_legend_of_its_own(monkeypatch):

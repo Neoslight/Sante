@@ -192,11 +192,11 @@ def base_layout(title: str | None = None, y_title: str | None = None, height: in
                     tickfont=dict(color=t["ink_muted"])),
         yaxis=dict(
             title=y_title,
-            # `grid_line` (encre à 8 %) et non `grid` (couleur pleine, invisible
-            # sur la surface des cartes), et `nticks` borné : quatre ou cinq
-            # lignes suffisent à lire une valeur intermédiaire, au-delà elles
-            # deviennent une trame.
-            showgrid=True, gridcolor=t["grid_line"], gridwidth=1, nticks=5,
+            # `grid_line` (encre à 6 %) et non `grid` (couleur pleine, invisible
+            # sur la surface des cartes). Trois graduations : la valeur exacte se
+            # lit désormais au bout de la courbe, l'axe ne sert plus qu'à donner
+            # l'ordre de grandeur — au-delà de trois lignes il devient une trame.
+            showgrid=True, gridcolor=t["grid_line"], gridwidth=1, nticks=3,
             zeroline=False, showline=False, tickfont=dict(color=t["ink_muted"]),
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
@@ -261,21 +261,27 @@ def fr_date_axis(fig: go.Figure, dates, max_ticks: int = 5) -> go.Figure:
     d = pd.to_datetime(pd.Series(list(dates))).dropna().sort_values()
     if d.empty:
         return fig
-    # `max_ticks` est un PLAFOND, pas une cible. Le pas se calculait en divisant
-    # par le nombre de graduations voulu, ce qui en produisait toujours une ou
-    # deux de plus une fois la dernière date ajoutée de force : 7 graduations
-    # pour 5 demandées sur 37 points. En divisant les INTERVALLES par le nombre
-    # d'intervalles voulu, la première et la dernière date tombent d'elles-mêmes
-    # sur une graduation et le compte est exact.
+    # Graduations réparties par `linspace` sur les INDICES, ce qui garantit les
+    # deux extrémités.
+    #
+    # Un pas fixe ne tombait pas sur le dernier point : la dernière graduation
+    # s'arrêtait au 17 juillet quand les données allaient au 24, et l'œil
+    # terminait sa lecture sur une date fausse. L'ajouter de force en fin de
+    # liste ne suffisait pas — trop proche de l'avant-dernière, Plotly masquait
+    # l'une des deux pour éviter le chevauchement. En répartissant les indices,
+    # premier et dernier jour SONT des graduations, et l'espacement reste régulier.
     if len(d) <= max_ticks:
-        ticks = list(d)
+        idx = list(range(len(d)))
     else:
-        step = -(-(len(d) - 1) // (max_ticks - 1))  # division entière par excès
-        ticks = list(d.iloc[::step])
-        if ticks[-1] != d.iloc[-1]:
-            ticks.append(d.iloc[-1])
+        idx = sorted({int(round(i)) for i in np.linspace(0, len(d) - 1, max_ticks)})
+    ticks = [d.iloc[i] for i in idx]
     labels = [f"{ts.day} {_MONTHS_ABBR_FR[ts.month - 1]}" for ts in ticks]
     labels[0] = f"{labels[0]} {ticks[0].year}"
+    # Dernière graduation un cran plus contrastée : c'est la date où s'arrête la
+    # mesure, la seule que le lecteur cherche vraiment sur cet axe.
+    if len(labels) > 1:
+        t = theme.active_tokens()
+        labels[-1] = f'<span style="color:{t["ink_secondary"]}">{labels[-1]}</span>'
     fig.update_xaxes(tickmode="array", tickvals=ticks, ticktext=labels)
     return fig
 
@@ -493,16 +499,19 @@ def baseline_band(fig: go.Figure, baseline_df: pd.DataFrame, date_col: str = "lo
     if d.empty:
         return fig
     t = theme.active_tokens()
-    band_color = _with_opacity(color or t["ink_muted"], 0.08 if color else 0.14)
+    band_color = _with_opacity(color or t["ink_muted"], 0.10 if color else 0.14)
     fig.add_trace(go.Scatter(
         x=pd.concat([d[date_col], d[date_col][::-1]]),
         y=pd.concat([d["upper"], d["lower"][::-1]]),
         fill="toself", fillcolor=band_color, line=dict(width=0),
         hoverinfo="skip", showlegend=True, name=label,
     ))
+    # Normale glissante en encre EFFACÉE, jamais en clair : à `ink_secondary`
+    # ou plus, le repère était plus visible que la série quotidienne qu'il sert
+    # à situer. Un repère qui domine la mesure inverse le sens du graphe.
     fig.add_trace(go.Scatter(
         x=d[date_col], y=d["baseline"], mode="lines",
-        line=dict(width=1, color=t["ink_muted"], dash="dot"),
+        line=dict(width=1, color=_with_opacity(t["ink_muted"], 0.7), dash="dot"),
         hoverinfo="skip", showlegend=False,
     ))
     return fig
@@ -573,17 +582,33 @@ def metric_chart(
     if warmup_until is not None:
         w_end = pd.Timestamp(warmup_until)
         if w_end > valid[x].min():
+            w_stop = min(w_end, valid[x].max())
             fig.add_vrect(
-                x0=valid[x].min(), x1=min(w_end, valid[x].max()),
+                x0=valid[x].min(), x1=w_stop,
                 fillcolor=t["ink_muted"], opacity=0.10, line_width=0, layer="below",
-                annotation_text=warmup_label, annotation_position="top left",
-                annotation_font=dict(size=11, color=t["ink_muted"]),
+            )
+            # Filet vertical sur la frontière : à 10 % d'opacité, le seul
+            # changement de fond est trop discret pour dire OÙ l'amorçage
+            # s'arrête — or c'est la seule chose que cette zone a à dire.
+            fig.add_vline(x=w_stop, line_width=1, line_dash="dot",
+                          line_color=_with_opacity(t["ink_muted"], 0.8))
+            # À MI-HAUTEUR et dans la zone, pas en haut à gauche : posée sur le
+            # bord supérieur, l'étiquette se lisait comme le titre du graphe.
+            fig.add_annotation(
+                x=valid[x].min() + (w_stop - valid[x].min()) / 2, xref="x",
+                y=0.5, yref="paper", text=warmup_label, showarrow=False,
+                font=dict(size=11, color=t["ink_muted"]),
             )
 
+    # ÉCHELLE DE POIDS VISUEL, du fond vers l'avant : grille, zone normale,
+    # normale glissante, quotidien, moyenne lissée. Elle était exactement
+    # inversée — la bande de référence était l'objet le plus lourd du graphe et
+    # la mesure quotidienne le plus léger, si bien que le décor dominait la
+    # donnée. Chaque poids ci-dessous est donc un rang, pas un réglage isolé.
     raw_hover = [metric.format(v) for v in valid[metric.key]]
     fig.add_trace(go.Scatter(
         x=valid[x], y=valid[metric.key], mode="lines", name="Quotidien",
-        line=dict(color=color, width=1), opacity=0.35,
+        line=dict(color=_with_opacity(color, 0.35), width=1),
         text=raw_hover, hovertemplate="%{text}<extra>Quotidien</extra>",
     ))
 
@@ -592,9 +617,33 @@ def metric_chart(
     ma_hover = [metric.format(v) for v in ma]
     fig.add_trace(go.Scatter(
         x=ma.index, y=ma.to_numpy(), mode="lines", name=f"Moyenne {ma_window}j",
-        line=dict(color=color, width=3),
+        # `spline` et bouts arrondis : la moyenne glissante est déjà lissée, ses
+        # angles vifs sont un artefact du tracé, pas de la donnée.
+        line=dict(color=color, width=2.5, shape="spline", smoothing=0.6),
         text=ma_hover, hovertemplate="%{text}<extra>Moyenne " + f"{ma_window}j" + "</extra>",
     ))
+
+    # Étiquette de FIN DE LIGNE plutôt que légende, comme `form_trend` du Bilan.
+    #
+    # Quatre légendes identiques répétaient « Zone normale / Quotidien / Moyenne »
+    # sur une page où les trois traces se distinguent d'elles-mêmes : la bande est
+    # une bande, la fine est visiblement la bruitée, l'épaisse est la lissée. Ce
+    # que la légende ne donnait pas, en revanche, c'est la VALEUR — désormais
+    # écrite au bout de la courbe, ce qui réconcilie d'un coup d'œil le graphe et
+    # sa tuile. La bande, elle, se nomme une fois dans le « ? » de la carte.
+    ma_valid = ma.dropna()
+    if not ma_valid.empty:
+        last_y = float(ma_valid.iloc[-1])
+        fig.add_trace(go.Scatter(
+            x=[ma_valid.index[-1]], y=[last_y], mode="markers",
+            marker=dict(color=color, size=4), hoverinfo="skip", showlegend=False,
+        ))
+        fig.add_annotation(
+            x=ma_valid.index[-1], y=last_y,
+            text=f"Moyenne {ma_window}j · {metric.format(last_y, with_unit=False)}",
+            showarrow=False, xanchor="left", xshift=8, yanchor="middle",
+            font=dict(color=color, size=11),
+        )
 
     if metric.target is not None:
         fig.add_hline(
@@ -606,8 +655,24 @@ def metric_chart(
     # Figure NUE : ni titre, ni légende, ni note. Ces trois lignes sont rendues
     # en HTML au-dessus par `metric_block` (cf. `chart_header_html`), et la
     # figure récupère toute sa boîte — marge haute de 8 px et rien d'autre.
-    layout = base_layout(None, y_title, height)
+    # Pas de titre d'axe Y : un texte à 90 degrés est le pire rapport
+    # lisibilité/place d'une page, et l'unité est déjà donnée par l'étiquette de
+    # fin de courbe et par la tuile correspondante.
+    #
+    # La marge droite loge cette étiquette, qui sort de l'aire de tracé.
+    layout = base_layout(None, None, height)
     layout["showlegend"] = False
+    # Marges FIXES, `autoexpand` coupé : c'est la seule façon d'obtenir deux
+    # graphes côte à côte dont les aires de tracé s'alignent au pixel.
+    #
+    # Par défaut, Plotly élargit chaque marge pour loger ses graduations. Deux
+    # graphes voisins dont les valeurs n'ont pas le même nombre de chiffres
+    # obtiennent donc deux largeurs utiles différentes, et leurs axes X ne se
+    # correspondent plus : impossible de lire « la FC monte pendant que la
+    # variabilité descend » quand les deux abscisses sont décalées de quelques
+    # pixels. La gauche est dimensionnée pour les graduations les plus larges du
+    # registre, la droite pour l'étiquette de fin de courbe, le bas pour les dates.
+    layout["margin"] = dict(l=44, r=112, t=8, b=28, autoexpand=False)
     fig.update_layout(**layout)
     fr_date_axis(fig, valid[x])
     device_band(fig, valid, x)
@@ -635,13 +700,7 @@ def metric_chart(
     elif show_confidence:
         note = stats.confidence_note(len(valid))
 
-    keys: list[tuple[str, str, str]] = []
-    if use_baseline and len(valid) >= 5:
-        keys.append(("Zone normale (28j)", "band", _with_opacity(color, 0.08)))
-    keys.append(("Quotidien", "thin", color))
-    keys.append((f"Moyenne {ma_window}j", "thick", color))
-
-    fig.update_layout(meta=dict(title=title or "", note=note, keys=keys))
+    fig.update_layout(meta=dict(title=title or "", note=note))
     return fig
 
 
@@ -810,6 +869,7 @@ def kpi_card(
     series: pd.Series | None = None, z: float | None = None,
     *, key: str | None = None, delta_label: str = "vs moyenne",
     baseline: float | None = None, band: tuple[float, float] | None = None,
+    tinted: bool = False,
 ) -> None:
     """Tuile KPI complète, en trois étages : nom (+ « i ») en haut, valeur en
     gros au milieu, pastille de variation et sparkline en bas -- un unique bloc
@@ -897,12 +957,19 @@ def kpi_card(
     # toujours : le survol ne concerne qu'une tuile à la fois, il est provoqué
     # par l'utilisateur, et il disparaît avec le curseur. Rien n'est coloré tant
     # que personne ne regarde.
-    spark_color = t["ink_secondary"]
+    # `tinted` : teinte PERMANENTE au lieu du gris de repos.
+    #
+    # Sur le Bilan, la couleur n'apparaît qu'au survol parce qu'aucun graphe de
+    # la page ne porte cette métrique — la teinte n'y désigne rien de visible.
+    # Sur une page qui montre AUSSI les courbes, elle crée le lien tuile ↔ courbe
+    # sans un mot, et l'économiser reviendrait à cacher une correspondance que le
+    # lecteur doit sinon reconstituer.
+    hot = t["series"][metric.palette_index % len(t["series"])]
+    spark_color = hot if tinted else t["ink_secondary"]
     # MÊME palette que `metric_chart` — c'est tout l'objet de la teinte de survol :
     # retrouver ailleurs la couleur de cette métrique. Lue dans `categorical`, la
     # tuile VO2max s'allumait en vert quand sa courbe est en cyan, et la promesse
     # tombait précisément sur la tuile qu'on venait de survoler.
-    hot = t["series"][metric.palette_index % len(t["series"])]
     baseline_text = (
         f"Ligne pointillée : ta normale sur 28 jours ({metric.format(baseline)})"
         if baseline is not None and not (isinstance(baseline, float) and math.isnan(baseline))
@@ -930,8 +997,11 @@ def kpi_card(
     scale_html = ""
     s_valid = pd.Series(series).dropna() if series is not None else pd.Series(dtype=float)
     if len(s_valid) >= 2 and svg:
+        # Sans unité des DEUX côtés : elle est déjà sur la valeur principale,
+        # trois lignes plus haut et en gros. Écrite ici aussi, elle apparaissait
+        # deux fois par tuile — seize fois sur une grille de huit.
         lo_txt = metric.format(float(s_valid.min()), with_unit=False)
-        hi_txt = metric.format(float(s_valid.max()))
+        hi_txt = metric.format(float(s_valid.max()), with_unit=False)
         scale_html = (
             f'<div class="bevel-kpi-scale">'
             f'<span><i>min</i> {html.escape(lo_txt)}</span>'
@@ -1597,12 +1667,6 @@ def intraday_hr(df: pd.DataFrame, zones_df: pd.DataFrame | None = None,
     return fig
 
 
-#: Aspect de chaque entrée de légende, en écho au trait qu'elle désigne :
-#: une bande pour la zone normale, un filet fin pour le quotidien, un trait
-#: épais pour la moyenne glissante.
-LEGEND_KINDS = ("band", "thin", "thick")
-
-
 def chart_header_html(meta: dict) -> str:
     """Titre, note de contexte et légende d'un graphe — EN HTML, au-dessus de la
     figure, jamais dedans.
@@ -1634,15 +1698,12 @@ def chart_header_html(meta: dict) -> str:
         parts.append(f'<div class="bevel-chart-title">{html.escape(meta["title"])}</div>')
     if meta.get("note"):
         parts.append(f'<div class="bevel-chart-note">{html.escape(meta["note"])}</div>')
-    keys = meta.get("keys") or []
-    if keys:
-        items = "".join(
-            f'<span class="bevel-chart-key">'
-            f'<i class="bevel-swatch bevel-swatch-{kind}" style="{"background" if kind == "band" else "color"}:{color}"></i>'
-            f"{html.escape(label)}</span>"
-            for label, kind, color in keys
-        )
-        parts.append(f'<div class="bevel-chart-legend">{items}</div>')
+    # PAS de légende ici. Elle a été remplacée par une étiquette au bout de la
+    # courbe lissée (cf. `metric_chart`) : quatre légendes identiques répétaient
+    # « Zone normale / Quotidien / Moyenne » sur des traces qui se distinguent
+    # d'elles-mêmes, et imposaient à chaque lecture le trajet œil → légende →
+    # courbe. Ce que la légende ne donnait pas — la valeur — est maintenant sur
+    # la courbe. La bande, elle, se nomme une fois dans le « ? » de la carte.
     return f'<div class="bevel-chart-head">{"".join(parts)}</div>' if parts else ""
 
 
