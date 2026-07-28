@@ -1,0 +1,43 @@
+# Mapping mouvement -> groupe musculaire, utilisé par mart.strength_sets.
+#
+# `movements` mappe la clé exacte de segment_movement (colonne
+# raw.workout_summaries.segment_movement) à un groupe. C'est la première
+# règle essayée.
+#
+# `keywords` est un filet de sécurité pour les lignes où segment_movement
+# est vide ou vaut "movements/custom_strength" / "movements/custom_cardio" :
+# on cherche alors un mot-clé (insensible à la casse) dans segment_name.
+# Testé dans l'ordre ; le premier qui matche gagne.
+#
+# Tout mouvement non reconnu par ces deux règles tombe dans "autre" et
+# l'ingestion l'affiche en avertissement pour qu'il soit ajouté ici.
+
+movements:
+  movements/squat_bodyweight: jambes
+  movements/forward_lunge_bodyweight: jambes
+  movements/glute_bridge_bodyweight: jambes
+  movements/forearm_plank_hold: gainage
+  movements/low_side_plank_hold: gainage
+  movements/deadbug: gainage
+  movements/bird_dog: gainage
+  movements/cross_body_mountain_climber: gainage
+  movements/knee_push_up: haut_du_corps
+  movements/prone_neck_extension: cou_epaules
+  movements/jumping_jacks: cardio
+  movements/custom_cardio: cardio
+  movements/cat_cow: mobilite
+  movements/childs_pose: mobilite
+
+keywords:
+  - contains: ["cou", "neck", "shrug", "épaule", "epaule", "shoulder"]
+    group: cou_epaules
+  - contains: ["raise", "farmer", "carry"]
+    group: haut_du_corps
+  - contains: ["fessier", "glute", "hanche", "hip"]
+    group: jambes
+  - contains: ["gainage", "plank", "abdo", "core"]
+    group: gainage
+  - contains: ["étirement", "etirement", "stretch", "relaxation", "respiration", "mobilité", "mobilite"]
+    group: mobilite
+
+default: autre

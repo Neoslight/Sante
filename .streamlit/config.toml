@@ -1,0 +1,58 @@
+# Thème Streamlit — miroir manuel de theme.DARK (app/theme.py). TOML ne peut
+# pas importer de Python : toute modification des jetons DARK côté theme.py
+# doit être répercutée ici à la main, et vice versa.
+#
+# Deux valeurs ci-dessous ne sont volontairement PAS des copies littérales :
+#   - borderColor reprend DARK["grid"] (#1B1B1F) et non DARK["border"], qui est
+#     un rgba() semi-transparent que Streamlit n'accepte pas dans cette option ;
+#   - [theme.sidebar].backgroundColor (#0D0D0F) est un cran entre DARK["page"]
+#     et DARK["surface"], sans équivalent dans les jetons (la sidebar n'est
+#     stylée que par cette config, jamais par un graphe Plotly).
+[server]
+enableStaticServing = true
+
+[[theme.fontFaces]]
+family = "Inter Tight"
+url = "app/static/InterTight-400.woff2"
+weight = 400
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Inter Tight"
+url = "app/static/InterTight-500.woff2"
+weight = 500
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Inter Tight"
+url = "app/static/InterTight-600.woff2"
+weight = 600
+style = "normal"
+
+# Échelle typographique figée : 32 (métrique) / 22 (verdict) / 15 (titre de
+# carte) / 13 (corps) / 11 (légende). `baseFontSize` cale le corps ; toutes les
+# tailles de `theme.inject_css()` sont en PIXELS pour ne pas dériver si cette
+# valeur bouge.
+# Accent unique : le vert de la Forme. Le bleu et l'orange sont réservés à la
+# seule courbe fond/fatigue (DARK["chart_pair"]).
+[theme]
+base = "dark"
+font = "Inter Tight"
+headingFont = "Inter Tight"
+baseFontSize = 13
+baseRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = false
+backgroundColor = "#0A0A0B"
+secondaryBackgroundColor = "#101012"
+textColor = "#ECECEC"
+primaryColor = "#3FBF95"
+borderColor = "#1B1B1F"
+linkColor = "#3FBF95"
+
+[theme.sidebar]
+backgroundColor = "#0D0D0F"
+borderColor = "#1B1B1F"
+
+[client]
+toolbarMode = "minimal"

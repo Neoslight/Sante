@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" role="img" aria-label="Santé">
+  <!-- Arc de jauge : la seule forme déjà présente dans l'interface, donc la
+       seule qui puisse en devenir la signature. Monochrome, sans dégradé ni
+       détail : la marque doit tenir à 16 px et en noir et blanc.
+
+       Dans la couleur d'ACCENT (#3FBF95), pas en bleu : le bleu est réservé à
+       la courbe fond/fatigue, et une marque qui emprunte une couleur réservée
+       fait mentir le système entier dès le coin supérieur gauche.
+
+       viewBox de 40 pour un dessin de 28 : les 6 px de marge tout autour
+       évitent que l'arc ne touche le bord du cadre que Streamlit lui donne
+       (il paraissait alors rogné en haut à gauche). -->
+  <path d="M9 26a11 11 0 1 1 22 0" fill="none" stroke="#3FBF95" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="20" cy="26" r="2.6" fill="#3FBF95"/>
+</svg>
