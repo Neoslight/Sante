@@ -216,6 +216,97 @@ def test_day_verdict_without_a_usable_model_says_so():
     assert v.nuances, "les signaux restent lisibles même sans modèle de forme"
 
 
+# --- Verdict de charge -------------------------------------------------------
+def test_training_verdict_without_a_usable_ratio_says_so():
+    v = stats.training_verdict(None, (0.8, 1.3))
+    assert v.status == "neutral"
+    assert v.headline == stats.LOAD_BADGES["neutral"][0]
+    assert v.hint == stats.LOAD_BADGES["neutral"][1]
+
+
+def test_training_verdict_below_range_reads_as_low_load_not_a_spike():
+    """Sous la borne basse, ce n'est pas une montée rapide mais un
+    désentraînement : le badge doit le dire, pas réutiliser celui de la
+    montée."""
+    v = stats.training_verdict(0.5, (0.8, 1.3))
+    assert v.status == "serious"
+    assert v.headline == stats.LOW_LOAD[0]
+    assert v.hint == stats.LOW_LOAD[1]
+
+
+def test_training_verdict_inside_range_is_plainly_good():
+    v = stats.training_verdict(1.0, (0.8, 1.3))
+    assert v.status == "good"
+    assert v.headline == stats.LOAD_BADGES["good"][0]
+    assert "mais" not in v.headline
+    assert v.nuances == []
+
+
+def test_training_verdict_flags_a_spike_well_beyond_the_range_as_critical():
+    # hi=1.3, lo=0.8 -> au-delà de hi + (hi - lo) = 1.8
+    v = stats.training_verdict(2.0, (0.8, 1.3))
+    assert v.status == "critical"
+    assert v.headline == stats.LOAD_BADGES["critical"][0]
+
+
+def test_training_verdict_concedes_an_adverse_signal():
+    v = stats.training_verdict(1.0, (0.8, 1.3), {"Séances": (-2.5, 1)})
+    assert "mais" in v.headline
+    assert v.nuances[0][0] == "Séances"
+
+
+def test_training_verdict_refuses_to_say_continue_while_the_base_falls():
+    """Un ACWR dans sa plage au-dessus d'un fond en baisse, c'est le ratio qui
+    ne voit pas le niveau : « continue sur ce rythme » recommanderait alors de
+    continuer à perdre."""
+    v = stats.training_verdict(1.0, (0.8, 1.3), base_change=-0.19)
+    assert v.status == "serious"
+    assert v.headline == stats.TEMPERED_LOAD[0]
+    assert v.hint == stats.TEMPERED_LOAD[1]
+    assert "continue" not in v.hint.lower()
+
+
+def test_training_verdict_keeps_its_advice_for_a_base_barely_moving():
+    v = stats.training_verdict(1.0, (0.8, 1.3), base_change=-0.02)
+    assert v.status == "good"
+    assert v.headline == stats.LOAD_BADGES["good"][0]
+
+
+def test_training_verdict_does_not_temper_a_verdict_already_out_of_range():
+    """Hors plage, le libellé nomme déjà le problème — et « montée trop rapide »
+    reste la nouvelle la plus urgente des deux."""
+    v = stats.training_verdict(2.0, (0.8, 1.3), base_change=-0.30)
+    assert v.status == "critical"
+    assert v.headline == stats.LOAD_BADGES["critical"][0]
+
+
+def test_training_verdict_puts_facts_first_and_exempts_them_from_the_z_threshold():
+    """Un compte à zéro n'a pas de z qui le porte : sur une série qui contient
+    déjà des zéros, il retombe dans la normale et disparaîtrait."""
+    v = stats.training_verdict(
+        1.0, (0.8, 1.3), {"Cardio": (-1.4, 1)},
+        facts=[("Séances", "aucune séance cette semaine", "serious")],
+    )
+    assert v.nuances[0][:3] == ("Séances", "aucune séance cette semaine", "serious")
+    assert [n[0] for n in v.nuances] == ["Séances", "Cardio"]
+
+
+def test_training_verdict_does_not_concede_twice_for_a_fact():
+    """Le fait porte déjà sa phrase : « Charge soutenable, mais aucune séance »
+    dirait deux fois la même nouvelle."""
+    v = stats.training_verdict(
+        1.0, (0.8, 1.3),
+        facts=[("Séances", "aucune séance cette semaine", "serious")],
+    )
+    assert "mais" not in v.headline
+
+
+def test_training_verdict_ignores_signals_below_the_nuance_threshold():
+    v = stats.training_verdict(1.0, (0.8, 1.3), {"Volume": (0.4, 1), "Cardio": (-0.6, -1)})
+    assert v.nuances == []
+    assert v.headline == stats.LOAD_BADGES["good"][0]
+
+
 # --- Verdict de progression -------------------------------------------------
 def _trend(slope_per_day, n=40, noise=0.0, seed=0):
     """Tendance à pente CONNUE, calculée par `stats.trend` lui-même : les tests

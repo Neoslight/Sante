@@ -144,6 +144,75 @@ def horizon_picker(
     return str(start), str(hi), None
 
 
+#: Fenêtres de la page « Entraînement », en semaines (None = tout l'historique).
+#: Des SEMAINES et non des jours : la page est intégralement hebdomadaire
+#: (barres empilées, tuiles de semaine), et un préréglage en jours bruts n'a
+#: pas de raison de tomber sur un multiple de 7.
+WEEK_SPANS: dict[str, int | None] = {"4 sem.": 4, "8 sem.": 8, "12 sem.": 12, "Tout": None}
+DEFAULT_WEEKS = "8 sem."
+
+
+def weeks_picker(key: str = "weeks", default: str = DEFAULT_WEEKS) -> tuple[str, str, int | None]:
+    """Sélecteur de fenêtre en semaines, rendu EN PAGE — même contrat que `horizon_picker`.
+
+    Bornes alignées sur le LUNDI de la semaine de `hi`, pas sur un compte de
+    jours bruts : une fenêtre de 28 jours calendaires tombe presque toujours
+    au milieu d'une semaine, et coupe donc en deux la première ou la dernière
+    des barres empilées qu'elle alimente — une semaine tronquée à côté de
+    semaines pleines fausserait la comparaison plus qu'elle ne la permettrait.
+
+    « 4 sem. » compte quatre semaines CLOSES, et la fenêtre en couvre donc
+    cinq : celle de `hi` est en cours, et la page qui appelle ce sélecteur
+    l'écarte de ses agrégats hebdomadaires — une semaine arrêtée un mardi
+    n'est pas comparable à ses voisines. Reculer de `n - 1` semaines rendrait
+    l'étiquette fausse : le lecteur choisirait quatre semaines et en verrait
+    trois dessinées.
+
+    Mêmes règles que `horizon_picker`, pour les mêmes raisons — un span que
+    l'historique ne remplit pas n'est pas proposé, et s'il n'en reste qu'un
+    seul, aucun contrôle n'est rendu (cf. la docstring de `horizon_picker`
+    ci-dessus, non recopiée ici).
+
+    Renvoie `(start, end, missing_days)` avec exactement la même sémantique
+    que `horizon_picker` : bornes en ISO, `missing_days` = jours de mesure
+    manquants avant qu'un deuxième span existe, `None` dès qu'un sélecteur a
+    été rendu.
+    """
+    lo, hi = queries.date_bounds()
+    lo, hi = pd.Timestamp(lo).date(), pd.Timestamp(hi).date()
+    depth_days = (hi - lo).days + 1
+
+    # `n + 1` semaines de profondeur exigées pour n semaines closes : la
+    # semaine de `hi` est en cours et ne compte pas.
+    def _needed(n: int) -> int:
+        return int((n + 1) * 7 * HORIZON_MIN_FILL)
+
+    available = {
+        label: n for label, n in WEEK_SPANS.items()
+        if n is None or depth_days >= _needed(n)
+    }
+    if len(available) == 1:
+        nxt = min(n for n in WEEK_SPANS.values() if n is not None)
+        return str(lo), str(hi), max(0, _needed(nxt) - depth_days)
+
+    choice = st.segmented_control(
+        "Semaines", list(available.keys()),
+        default=default if default in available else list(available)[0],
+        label_visibility="collapsed", key=key,
+        help="Les fenêtres plus longues que l'historique disponible ne sont "
+             "pas proposées : elles donneraient toutes la même période.",
+    ) or list(available)[0]
+    n = available[choice]
+    if n is None:
+        start = lo
+    else:
+        # Lundi de la semaine de `hi`, reculé de n semaines : la fenêtre couvre
+        # les n dernières semaines CLOSES, plus celle en cours.
+        monday_hi = hi - dt.timedelta(days=hi.weekday())
+        start = max(lo, monday_hi - dt.timedelta(weeks=n))
+    return str(start), str(hi), None
+
+
 #: Noms de jours et de mois écrits à la main : le serveur qui fait tourner
 #: Streamlit n'a pas forcément la locale `fr_FR` installée, et
 #: `locale.setlocale` échouerait silencieusement en prod.

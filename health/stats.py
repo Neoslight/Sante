@@ -285,6 +285,168 @@ def z_phrase(z: float | None) -> str:
     return "très au-dessus de ta normale" if z > 0 else "très en dessous de ta normale"
 
 
+# Libellé court + conduite à tenir, par niveau de charge (ACWR). Même forme
+# que TSB_BADGES, pour la même raison : un badge de tête tient en un mot, la
+# conduite à tenir juste derrière.
+LOAD_BADGES: dict[str, tuple[str, str]] = {
+    "critical":  ("Montée trop rapide", "Allège la prochaine séance ou ajoute un jour de repos."),
+    "serious":   ("Montée rapide",      "Tiens ce volume une semaine avant de remonter."),
+    "good":      ("Charge soutenable",  "Continue sur ce rythme."),
+    # Pas d'entrée "excellent" : contrairement au TSB, il n'existe pas de
+    # ratio de charge MEILLEUR que soutenable -- au-dessus de la plage on
+    # monte trop vite, en dessous on s'entraîne trop peu. La plage est le
+    # sommet, pas un palier intermédiaire.
+    "neutral":   ("Pas encore concluant", "Il faut quatre semaines de charge pour situer un ratio."),
+}
+
+#: Cas particulier du statut "serious" : un ACWR sous la borne basse n'est pas
+#: une montée rapide mais un désentraînement. Même statut que la montée rapide
+#: (les deux appellent à ajuster la semaine), mais un badge et un conseil
+#: opposés -- les regrouper sous LOAD_BADGES["serious"] dirait "tu montes trop
+#: vite" à quelqu'un qui s'entraîne trop peu.
+LOW_LOAD: tuple[str, str] = ("Volume en retrait", "La marge est là : tu peux remonter progressivement.")
+
+#: Baisse RELATIVE du fond de forme au-delà de laquelle un ratio dans sa plage
+#: ne peut plus se lire « continue sur ce rythme ».
+#:
+#: L'ACWR est un RAPPORT entre la charge récente et la charge habituelle : il
+#: vaut ~1 dès que la baisse est régulière, parce que le dénominateur descend
+#: avec le numérateur. Un désentraînement propre est donc invisible pour lui,
+#: par construction. Dire « charge soutenable, continue » au-dessus d'un fond
+#: qui a perdu un cinquième de sa valeur, c'est recommander de continuer à
+#: perdre — la carte le savait déjà, puisqu'elle affiche la baisse juste en
+#: dessous, mais son conseil contredisait son propre constat.
+#:
+#: Dix pour cent : en dessous, la variation d'une moyenne exponentielle sur
+#: 42 jours n'est pas distinguable d'une semaine de repos ordinaire.
+BASE_DROP = 0.10
+TEMPERED_LOAD: tuple[str, str] = (
+    "Charge stable, mais le fond baisse",
+    "Le ratio tient parce que la baisse est régulière : pour reconstruire du fond, "
+    "il faut remonter le volume, pas le maintenir.",
+)
+
+
+def training_verdict(
+    acwr: float | None, good_range: tuple[float, float],
+    signals: dict[str, tuple[float | None, int]] | None = None,
+    base_change: float | None = None,
+    facts: list[tuple[str, str, str]] | None = None,
+) -> Verdict:
+    """Un verdict unique de charge, à partir de l'ACWR et de signaux hebdomadaires.
+
+    Pendant de `day_verdict` pour la charge d'entraînement : au lieu de
+    laisser la page composer elle-même une lecture à partir d'une courbe ACWR
+    et de plusieurs pastilles de tendance, tout part d'ici.
+
+    Règle de composition :
+
+    * le **statut** vient de la position de l'ACWR par rapport à sa plage
+      soutenable (`good_range = (lo, hi)`, celle du registre de métriques) --
+      seule grandeur calculée ici, donc seule vérifiable. Sous `lo` : montée
+      trop lente, pas trop rapide, d'où un badge dédié (`LOW_LOAD`) plutôt que
+      le libellé "montée" de `LOAD_BADGES["serious"]`. Au-delà de `hi`, le
+      dépassement est jugé à la même échelle que la plage elle-même
+      (`hi - lo`) : passer `hi + (hi - lo)` revient à s'écarter de la borne
+      haute d'autant que la plage est large, ce qui vaut alerte "critical" ;
+    * la **phrase de tête** part du libellé retenu et se voit adjoindre la
+      concession de la nuance dominante si elle est défavorable -- mécanique
+      identique à `day_verdict`, sauf sans modèle utilisable (`acwr` absent) :
+      un ratio qu'on ne peut pas situer n'a rien à concéder ;
+    * `nuances` ne retient que les signaux à |z| >= `NUANCE_Z`, triés du plus
+      marqué au moins marqué -- même règle, même seuil que `day_verdict`.
+
+    `signals` : {libellé: (z, direction)}, direction au sens de
+    `status_from_z`. Pensé pour les z-scores hebdomadaires de volume, séances
+    et cardio calculés côté page (`rolling_baseline` / `robust_z` sur
+    `mart.weekly`) -- ce module ne les calcule pas, il les compose.
+
+    `base_change` : variation RELATIVE du fond de forme sur la fenêtre lue
+    (−0,186 pour une baisse de 18,6 %). C'est le garde-fou du ratio, et il
+    corrige une contradiction que la carte portait en elle : un ACWR dans sa
+    plage produisait « continue sur ce rythme » juste au-dessus d'un constat de
+    fond en baisse de près d'un cinquième. Les deux étaient exacts et
+    inconciliables — parce qu'un rapport ne voit jamais le NIVEAU dont il est le
+    rapport. Au-delà de `BASE_DROP`, la phrase de tête et le conseil passent donc
+    à `TEMPERED_LOAD`, qui dit la seule chose vraie des deux à la fois.
+
+    Ce garde-fou ne s'applique qu'au statut "good" : hors de la plage, le
+    libellé nomme déjà le problème, et « montée trop rapide » sur un fond qui
+    baisse reste la nouvelle la plus urgente des deux.
+
+    `facts` : nuances CATÉGORIELLES, `(nom, phrase, statut)`, placées en tête et
+    exemptes du seuil `NUANCE_Z`. Un z-score situe une valeur sur l'échelle de
+    sa propre série, ce qui le rend aveugle à une frontière : sur un historique
+    où deux semaines sur cinq sont à zéro séance, une semaine sans aucune séance
+    ressort à z = −0,67, « dans ta normale », et disparaît. L'absence de la
+    chose comptée n'est pas une position basse sur une échelle. Les tuiles ne
+    peuvent pas la porter — le système leur a retiré tout indicateur par tuile,
+    « soit toutes, soit aucune » (cf. `charts.kpi_card`) — donc elle se dit ici,
+    là où les faits de la page sont déjà écrits en toutes lettres.
+
+    Un fait ne prend PAS la concession de la phrase de tête : il porte déjà sa
+    propre phrase, et « Volume en retrait, mais aucune séance » dirait deux fois
+    la même nouvelle.
+    """
+    lo, hi = good_range
+    low = False
+    if acwr is None or (isinstance(acwr, float) and math.isnan(acwr)):
+        status = "neutral"
+    elif acwr < lo:
+        status, low = "serious", True
+    elif acwr <= hi:
+        status = "good"
+    elif acwr <= hi + (hi - lo):
+        status = "serious"
+    else:
+        status = "critical"
+
+    label, hint = LOW_LOAD if low else LOAD_BADGES[status]
+
+    # Le fond qui baisse bat le ratio qui tient : voir `BASE_DROP`.
+    tempered = (
+        status == "good" and base_change is not None
+        and not (isinstance(base_change, float) and math.isnan(base_change))
+        and base_change <= -BASE_DROP
+    )
+    if tempered:
+        status = "serious"
+        label, hint = TEMPERED_LOAD
+
+    nuances: list[tuple[str, str, str, float]] = []
+    for name, (z, direction) in (signals or {}).items():
+        if z is None or (isinstance(z, float) and math.isnan(z)) or direction == 0:
+            continue
+        if abs(z) < NUANCE_Z:
+            continue
+        nuances.append((name, z_phrase(z), status_from_z(z, direction), float(z)))
+    nuances.sort(key=lambda n: abs(n[3]), reverse=True)
+
+    # La concession de la ligne de titre se calcule sur les seules nuances
+    # issues d'un z — un fait porte déjà sa propre phrase (cf. docstring).
+    z_adverse = [n for n in nuances if n[2] in ("serious", "critical")]
+
+    # Les faits EN TÊTE : ils ne se comparent à aucune échelle, et ce sont eux
+    # que le lecteur peut corriger dès demain. Le z porté est nul — ni le tri
+    # (déjà fait) ni `merge_nuances` (un fait n'a pas de voisin de même phrase)
+    # n'en ont besoin.
+    nuances = [(n, phrase, st_, 0.0) for n, phrase, st_ in (facts or [])] + nuances
+
+    # Sans modèle utilisable, il n'y a rien à concéder : la phrase deviendrait
+    # "Pas encore concluant, mais ..." alors que le "mais" suppose un jugement
+    # de départ que l'absence d'ACWR ne permet justement pas de poser.
+    # `tempered` porte déjà une phrase à concession (« Charge stable, MAIS le
+    # fond baisse ») : lui en ajouter une seconde donnerait « ..., mais séances
+    # en retrait », deux « mais » dans une ligne de titre.
+    adverse = z_adverse if status != "neutral" and not tempered else []
+    if adverse:
+        headline = f"{label}, mais {_concession(adverse[0][0], adverse[0][3])}"
+    else:
+        headline = label
+
+    return Verdict(status=status, headline=headline, hint=hint, nuances=nuances)
+
+
 # --------------------------------------------------------------------------
 # Tendance
 # --------------------------------------------------------------------------

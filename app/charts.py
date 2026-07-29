@@ -425,21 +425,50 @@ def muscle_group_bar(df: pd.DataFrame, x: str, suffix: str = "_min", y_title: st
     if df is None or df.empty:
         return _empty_figure(title, height, "Aucune séance de renforcement sur cette période.")
     colors = muscle_group_colors()
+    # Seuil d'écriture DANS un segment : en deçà, l'étiquette est plus haute que
+    # le segment qui la porte. « Gainage : 2 » dans quatre pixels se chevauchait
+    # avec ses voisines et rendait le bas des piles illisible — pour une valeur
+    # que le survol donne de toute façon, et que la hauteur du segment dit déjà.
+    # Même règle que `effort_bar`, qui n'écrit dans un segment qu'au-delà de 10 %
+    # de la barre.
+    stack_totals = df[[f"{g}{suffix}" for g in MUSCLE_GROUP_ORDER
+                       if f"{g}{suffix}" in df.columns]].fillna(0).sum(axis=1)
+    tallest = float(stack_totals.max()) if len(stack_totals) else 0.0
+    floor = tallest * 0.10
+
     fig = go.Figure()
     for group in MUSCLE_GROUP_ORDER:
         col = f"{group}{suffix}"
         if col not in df.columns:
             continue
-        text = [f"{MUSCLE_GROUP_LABELS[group]} : {v:.0f}" for v in df[col]]
+        hover = [f"{MUSCLE_GROUP_LABELS[group]} : {v:.0f}" for v in df[col]]
+        shown = [h if pd.notna(v) and v >= floor else "" for h, v in zip(hover, df[col])]
         fig.add_trace(go.Bar(
             x=df[x], y=df[col], name=MUSCLE_GROUP_LABELS[group],
             marker_color=colors[group], marker_line_width=0,
-            text=text, hovertemplate="%{text}<extra></extra>",
+            text=shown, hovertext=hover, textposition="inside",
+            insidetextanchor="middle", cliponaxis=False,
+            hovertemplate="%{hovertext}<extra></extra>",
         ))
     layout = base_layout(title, y_title, height)
     layout["barmode"] = "stack"
     layout["bargap"] = 0.25
     fig.update_layout(**layout)
+    # Axe des dates en FRANÇAIS. Laissé à Plotly, il rendait « Jun 22 2026 » et
+    # « Jul 6 » sur une page qui ne parle que français — et avec l'année, que
+    # `fr_date_axis` supprime partout ailleurs pour la même raison.
+    fr_date_axis(fig, df[x])
+
+    # Une semaine SANS AUCUN volume ne dessine rien : la colonne est vide, et
+    # rien ne distingue « zéro série cette semaine-là » de « semaine absente des
+    # données ». Le zéro s'écrit donc, à la place de la barre manquante.
+    totals = df[[f"{g}{suffix}" for g in MUSCLE_GROUP_ORDER
+                 if f"{g}{suffix}" in df.columns]].fillna(0).sum(axis=1)
+    t = theme.active_tokens()
+    for xv, total in zip(df[x], totals):
+        if total <= 0:
+            fig.add_annotation(x=xv, y=0, text="0", showarrow=False, yshift=10,
+                               font=dict(color=t["ink_muted"], size=11))
     return fig
 
 
@@ -1477,7 +1506,7 @@ def distribution(
 
 def calendar_heatmap(
     df: pd.DataFrame, value_col: str, date_col: str = "local_date", title: str = "",
-    height: int = 220,
+    height: int = 220, unit: str = "",
 ) -> go.Figure:
     """Grille semaine x jour de la semaine. Sur un historique de quelques
     semaines, la vue en ligne du temps noie l'assiduité dans le bruit
@@ -1496,25 +1525,48 @@ def calendar_heatmap(
 
     z = np.full((7, len(weeks)), np.nan)
     text = np.full((7, len(weeks)), "", dtype=object)
+    def _fr(ts) -> str:
+        ts = pd.Timestamp(ts)
+        return f"{ts.day} {_MONTHS_ABBR_FR[ts.month - 1]}"
+
     for row in d.itertuples(index=False):
         i, j = int(getattr(row, "dow")), week_idx[getattr(row, "week_start")]
         val = getattr(row, value_col)
         z[i, j] = val
-        date_label = getattr(row, date_col).strftime("%d/%m")
+        # Date en FRANÇAIS, comme partout ailleurs. Cette grille écrivait
+        # « 22/06 » quand les barres voisines disent « 22 juin » et le journal
+        # « 25 juillet » : trois formats de date sur une même page obligent à
+        # réapprendre à lire à chaque carte.
+        date_label = _fr(getattr(row, date_col))
         text[i, j] = f"{date_label} : {val:.1f}" if pd.notna(val) else f"{date_label} : —"
 
-    x_labels = [pd.Timestamp(w).strftime("%d/%m") for w in weeks]
+    x_labels = [_fr(w) for w in weeks]
+    # Plancher de rampe relevé d'un cran.
+    #
+    # Le premier ton de la séquentielle (#0E2440 en sombre) est à quelques unités
+    # du fond de page : une journée à cinq minutes d'activité s'y confondait avec
+    # une case vide, c'est-à-dire avec une journée SANS DONNÉE. Une magnitude
+    # encodée en couleur doit rester distincte de l'absence de mesure — sinon la
+    # grille ment sur les deux à la fois.
+    ramp = sequential_scale()
     fig = go.Figure(go.Heatmap(
         z=z, x=x_labels, y=day_labels, text=text,
-        colorscale=sequential_colorscale(), hovertemplate="%{text}<extra></extra>",
-        showscale=True,
+        colorscale=_ramp_to_colorscale(ramp[1:] if len(ramp) > 2 else ramp),
+        hovertemplate="%{text}<extra></extra>", showscale=True,
+        colorbar=dict(title=dict(text=unit or None, side="top")) if unit else None,
     ))
     fig.update_layout(**base_layout(title, None, height))
-    fig.update_yaxes(autorange="reversed")
+    # LES SEPT jours étiquetés. Plotly en laissait tomber cinq pour tenir dans la
+    # hauteur, et il ne restait que « Lun » et « Ven » : impossible alors de dire
+    # quelle ligne on regarde, alors que le motif hebdomadaire est TOUT ce que
+    # cette grille existe pour montrer.
+    fig.update_yaxes(autorange="reversed", tickmode="array",
+                     tickvals=day_labels, ticktext=day_labels)
     return fig
 
 
-def radar(values_by_group: dict[str, float], title: str = "", height: int = 360) -> go.Figure:
+def radar(values_by_group: dict[str, float], title: str = "", height: int = 360,
+          unit: str = "") -> go.Figure:
     """Équilibre des groupes musculaires. Réutilise l'ordre et les couleurs
     catégorielles fixes déjà utilisées par `muscle_group_bar` : un même groupe
     porte toujours la même couleur d'un graphe à l'autre du dashboard."""
@@ -1527,27 +1579,83 @@ def radar(values_by_group: dict[str, float], title: str = "", height: int = 360)
 
     values = [values_by_group[g] for g in groups]
     labels = [MUSCLE_GROUP_LABELS[g] for g in groups]
-    color = t["categorical"][0]
+    # UN GROUPE, UNE COULEUR — ce que la docstring promet depuis toujours et que
+    # le code ne faisait pas : les sept sommets étaient peints d'une seule teinte
+    # catégorielle (`categorical[0]`), pendant que les barres empilées de la même
+    # carte donnaient à chaque groupe la sienne. Deux dessins de la même donnée
+    # avec deux encodages : le lecteur devait relire les étiquettes du radar pour
+    # retrouver ce que les barres lui avaient appris par la couleur.
+    #
+    # La couleur vit sur les SOMMETS, pas sur le contour ni le remplissage : une
+    # aire fermée n'a qu'une couleur possible, et la lui donner aurait désigné un
+    # groupe au hasard comme propriétaire de la forme entière. Le contour reste en
+    # encre — il dessine l'équilibre, il ne nomme personne.
+    palette = muscle_group_colors()
+    dot_colors = [palette[g] for g in groups]
+    outline = t["ink_secondary"]
 
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(
         r=values + [values[0]], theta=labels + [labels[0]], fill="toself",
-        fillcolor=_with_opacity(color, 0.15), line=dict(color=color, width=2),
-        marker=dict(size=6, color=color),
-        hovertemplate="%{theta} : %{r:.0f}<extra></extra>",
+        fillcolor=_with_opacity(outline, 0.10),
+        line=dict(color=_with_opacity(outline, 0.55), width=1.5),
+        marker=dict(size=9, color=dot_colors + [dot_colors[0]]),
+        hovertemplate="%{theta} : %{r:.0f}" + (f" {unit}" if unit else "")
+                      + "<extra></extra>",
     ))
-    fig.update_layout(
+    # Clé `title` OMISE quand il n'y en a pas, exactement comme `base_layout` :
+    # `update_layout(title=None)` instancie quand même l'objet Title, sérialisé
+    # en `"title": {}`, où Plotly.js lit un `text` indéfini et écrit « undefined »
+    # au-dessus du graphe. Ce graphe ne passe pas par `base_layout` (il est en
+    # coordonnées polaires) et refaisait donc la faute pour son compte.
+    layout = dict(
         polar=dict(
             bgcolor="rgba(0,0,0,0)",
-            radialaxis=dict(showline=False, gridcolor=t["grid"], tickfont=dict(color=t["ink_muted"])),
+            # TROIS graduations radiales, et leur unité sur la dernière.
+            #
+            # En automatique, Plotly en posait dix (0, 5, 10 … 45) : sur un rayon
+            # de quelques centimètres, elles se chevauchaient en une bouillie de
+            # chiffres au centre. Un radar sert à comparer des branches entre
+            # elles, pas à lire une valeur au demi-point — c'est la même raison
+            # qui limite les graphes cartésiens à deux graduations en Y.
+            #
+            # Et l'unité écrite : sans elle, « 45 » ne dit pas si ce sont des
+            # minutes ou des séries, alors que la carte propose justement de
+            # basculer de l'une à l'autre.
+            radialaxis=dict(showline=False, gridcolor=t["grid"], nticks=3,
+                            ticksuffix=f" {unit}" if unit else "",
+                            tickfont=dict(color=t["ink_muted"])),
             angularaxis=dict(gridcolor=t["grid"], tickfont=dict(color=t["ink_secondary"])),
         ),
         showlegend=False, height=height, paper_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter Tight, system-ui, -apple-system, Segoe UI, sans-serif", color=t["ink_secondary"]),
-        title=dict(text=title, font=dict(size=14, color=t["ink_primary"])) if title else None,
         margin=dict(l=30, r=30, t=40 if title else 10, b=10),
     )
+    if title:
+        layout["title"] = dict(text=title, font=dict(size=14, color=t["ink_primary"]))
+    fig.update_layout(**layout)
     return fig
+
+
+def plain_table(df: pd.DataFrame):
+    """Tableau en ENCRE, pour `st.dataframe` — aucune couleur portée par le texte.
+
+    Streamlit rend ses tableaux dans un `<canvas>` : ni la feuille de style ni
+    l'inspection du DOM n'ont prise sur les couleurs qu'il y écrit lui-même. Le
+    seul levier depuis Python est le `Styler` de pandas, qu'il honore — d'où ce
+    passage obligé plutôt qu'une règle dans `theme.inject_css()`.
+
+    Ce qu'il corrige : un journal de séances où « Cardio » ressortait en bleu et
+    « Renforcement » en orange, une dépense en orange et un nombre de séries en
+    bleu. Ces deux teintes sont le duo `chart_pair`, réservé à la seule courbe
+    fond/fatigue, et l'orange sert d'alerte ailleurs dans le tableau de bord :
+    une table de faits neutres empruntait donc le vocabulaire du jugement, pour
+    coder une distinction qu'elle nomme déjà en toutes lettres dans sa colonne
+    « Type ». Le budget couleur d'une page se compte en objets colorés visibles ;
+    un tableau n'en est pas un.
+    """
+    t = theme.active_tokens()
+    return df.style.set_properties(**{"color": t["ink_primary"]})
 
 
 def waterfall(components: list[tuple[str, float | None]], title: str = "", height: int = 340,
